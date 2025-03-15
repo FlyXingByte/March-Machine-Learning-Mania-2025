@@ -5,11 +5,10 @@ import feature_engineering
 import models
 import evaluation
 
-
 def parse_args():
     """Parse command line arguments"""
     parser = argparse.ArgumentParser(description='March Mania Prediction')
-    parser.add_argument('--data_path', type=str, default="../input/march-machine-learning-mania-2025/",
+    parser.add_argument('--data_path', type=str, default="Z:\\kaggle\\MMLM2025\\March-Machine-Learning-Mania-2025\\input\\march-machine-learning-mania-2025",
                         help='Path to the data directory')
     parser.add_argument('--start_year', type=int, default=2018,
                         help='Only include seasons from this year onwards')
@@ -22,7 +21,7 @@ def parse_args():
 def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbose=1):
     """
     Run the entire March Mania prediction pipeline
-    
+
     Args:
         data_path: Path to the data directory
         start_year: Only include seasons from this year onwards
@@ -33,6 +32,8 @@ def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbo
     
     # Step 1: Load data
     season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year)
+    # 加载 KenPom 外部数据
+    kenpom_df = data_loader.load_kenpom_data(data_path, teams)
     
     # Step 2: Merge and prepare games data
     games = data_loader.merge_and_prepare_games(season_detail, tourney_detail)
@@ -51,6 +52,17 @@ def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbo
     games = feature_engineering.add_head_to_head_features(games)
     games = feature_engineering.add_recent_performance_features(games, window=5)
     
+    # --- 新增：合并 KenPom 外部数据到训练数据 ---
+    try:
+        if not kenpom_df.empty:
+            print("Merging KenPom features...")
+            games = feature_engineering.merge_kenpom_features(games, kenpom_df)
+        else:
+            print("KenPom data is empty. Skipping KenPom feature merge.")
+    except Exception as e:
+        print(f"Error merging KenPom features: {e}")
+        print("Continuing without KenPom features...")
+    
     # Step 7: Aggregate features
     agg_features = feature_engineering.aggregate_features(games)
     
@@ -64,6 +76,17 @@ def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbo
         print("Merging aggregated features...")
         games = games.merge(agg_features, how='left', left_on='IDTeams', right_on='IDTeams_c_score')
         submission_df = submission_df.merge(agg_features, how='left', left_on='IDTeams', right_on='IDTeams_c_score')
+    
+    # --- 新增：将 KenPom 外部特征也合并到提交数据 ---
+    try:
+        if not kenpom_df.empty:
+            print("Merging KenPom features to submission data...")
+            submission_df = feature_engineering.merge_kenpom_features(submission_df, kenpom_df)
+        else:
+            print("KenPom data is empty. Skipping KenPom feature merge for submission.")
+    except Exception as e:
+        print(f"Error merging KenPom features to submission: {e}")
+        print("Continuing without KenPom features in submission...")
     
     # Step 10: Prepare final datasets
     X_train, y_train, X_test, features = evaluation.prepare_dataset(games, submission_df)
@@ -89,4 +112,4 @@ if __name__ == "__main__":
         start_year=args.start_year,
         output_file=args.output_file,
         verbose=args.verbose
-    ) 
+    )

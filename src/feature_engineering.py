@@ -7,11 +7,11 @@ def feature_engineering(games, seed_dict):
     - Generate game IDs and order teams.
     - Map seed values and calculate seed differences and strengths.
     - Generate target variable.
-    
+
     Args:
         games: DataFrame with game data
         seed_dict: Dictionary mapping Season_TeamID to seed value
-        
+
     Returns:
         DataFrame with engineered features
     """
@@ -50,10 +50,10 @@ def feature_engineering(games, seed_dict):
 def add_team_features(games):
     """
     Add historical performance features for each team based on entire season stats
-    
+
     Args:
         games: DataFrame with game data
-        
+
     Returns:
         Tuple of (DataFrame with added features, team_stats dictionary)
     """
@@ -115,32 +115,28 @@ def add_head_to_head_features(games):
     """
     For each game (training only), compute head-to-head win rate for Team1 vs Team2 using previous seasons data.
     If no historical matchup, assign default value 0.5.
-    
+
     Args:
         games: DataFrame with game data
-        
+
     Returns:
         DataFrame with head-to-head features added
     """
     print("Calculating historical head-to-head features...")
     
-    # Function to compute head-to-head win rate for a given game row.
     def compute_h2h(row, df):
         current_season = row['Season']
         team1 = row['Team1']
         team2 = row['Team2']
-        # Filter games from previous seasons where the two teams met (order-insensitive)
         past_games = df[(df['Season'] < current_season) &
-                        (( (df['Team1'] == team1) & (df['Team2'] == team2) ) |
+                        (((df['Team1'] == team1) & (df['Team2'] == team2)) |
                          ((df['Team1'] == team2) & (df['Team2'] == team1)))]
         if past_games.empty:
             return 0.5
         else:
-            # In our standardized ordering, if Team1 is the lower id, then win indicator in training data (WinA) equals 1 if Team1 won.
             win_rate = past_games['WinA'].mean()
             return win_rate
             
-    # Apply only to training data (assumes games DataFrame covers historical data)
     games['H2H_WinRate'] = games.apply(lambda r: compute_h2h(r, games), axis=1)
     return games
 
@@ -149,11 +145,11 @@ def add_recent_performance_features(games, window=5):
     For each game, calculate recent performance features for each team in the same season.
     Uses 'DayNum' to determine game order. If 'DayNum' is missing, skip recent performance features.
     Features include recent win rate and average score differential.
-    
+
     Args:
         games: DataFrame with game data
         window: Number of recent games to consider
-        
+
     Returns:
         DataFrame with recent performance features added
     """
@@ -167,19 +163,14 @@ def add_recent_performance_features(games, window=5):
     
     print(f"Calculating recent performance features (window={window} games)...")
     
-    # For each game row, use previous games in same season for that team.
     def recent_stats(row, team, df):
         season = row['Season']
         current_day = row['DayNum']
-        # Filter games in the same season with DayNum less than current game day
         past_games = df[(df['Season'] == season) & (df['DayNum'] < current_day)]
-        # Consider games where the team participated (as Team1 or Team2)
         team_games = past_games[(past_games['Team1'] == team) | (past_games['Team2'] == team)]
         if team_games.empty:
             return (0.5, 0.0)
-        # Recent win rate and average score difference
-        win_rate = team_games['WinA'].mean()  # Note: this is a simplification; ideally, adjust if team appears as second team.
-        # For score diff, use ScoreDiffNorm as defined in feature_engineering()
+        win_rate = team_games['WinA'].mean()
         avg_score_diff = team_games['ScoreDiffNorm'].mean() if 'ScoreDiffNorm' in team_games.columns else 0.0
         return (win_rate, avg_score_diff)
     
@@ -188,7 +179,6 @@ def add_recent_performance_features(games, window=5):
     recent_score_diff1 = []
     recent_score_diff2 = []
     
-    # Iterate over games
     for _, row in games.iterrows():
         win1, score_diff1 = recent_stats(row, row['Team1'], games)
         win2, score_diff2 = recent_stats(row, row['Team2'], games)
@@ -202,7 +192,6 @@ def add_recent_performance_features(games, window=5):
     games['Team1_RecentScoreDiff'] = recent_score_diff1
     games['Team2_RecentScoreDiff'] = recent_score_diff2
     
-    # Add difference features from recent performance
     games['RecentWinRateDiff'] = games['Team1_RecentWinRate'] - games['Team2_RecentWinRate']
     games['RecentScoreDiffDiff'] = games['Team1_RecentScoreDiff'] - games['Team2_RecentScoreDiff']
     return games
@@ -210,10 +199,10 @@ def add_recent_performance_features(games, window=5):
 def aggregate_features(games):
     """
     Aggregate game statistics for later use if available
-    
+
     Args:
         games: DataFrame with game data
-        
+
     Returns:
         DataFrame with aggregated features
     """
@@ -234,30 +223,27 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     """
     Process the sample submission file to prepare features for prediction.
     Uses similar feature mapping as training data.
-    
+
     Args:
         submission_df: DataFrame with sample submission data
         seed_dict: Dictionary mapping Season_TeamID to seed value
         team_stats: Dictionary with team statistics
         extract_game_info_func: Function to extract game information
-        
+
     Returns:
         DataFrame with features for submission predictions
     """
     print("Preparing submission file features...")
     
-    # Extract game information
     game_info = submission_df['ID'].apply(extract_game_info_func)
     submission_df['Season'] = [info[0] for info in game_info]
     submission_df['Team1'] = [info[1] for info in game_info]
     submission_df['Team2'] = [info[2] for info in game_info]
     
-    # Create ID fields for joining
     submission_df['IDTeams'] = submission_df.apply(lambda r: f"{r['Team1']}_{r['Team2']}", axis=1)
     submission_df['IDTeam1'] = submission_df.apply(lambda r: f"{r['Season']}_{r['Team1']}", axis=1)
     submission_df['IDTeam2'] = submission_df.apply(lambda r: f"{r['Season']}_{r['Team2']}", axis=1)
     
-    # Add seed information
     submission_df['Team1Seed'] = submission_df['IDTeam1'].map(seed_dict).fillna(16)
     submission_df['Team2Seed'] = submission_df['IDTeam2'].map(seed_dict).fillna(16)
     submission_df['SeedDiff'] = submission_df['Team1Seed'] - submission_df['Team2Seed']
@@ -266,7 +252,6 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     submission_df['Team2SeedStrength'] = np.exp(-submission_df['Team2Seed'] / 4)
     submission_df['SeedStrengthDiff'] = submission_df['Team1SeedStrength'] - submission_df['Team2SeedStrength']
     
-    # Map team stats features
     submission_df['Team1_WinRate'] = submission_df['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('win_rate', 0.5))
     submission_df['Team2_WinRate'] = submission_df['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('win_rate', 0.5))
     submission_df['Team1_GamesPlayed'] = submission_df['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('games_played', 0))
@@ -284,4 +269,67 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     submission_df['AvgAllowedDiff'] = submission_df['Team1_AvgAllowed'] - submission_df['Team2_AvgAllowed']
     submission_df['PointDiffDiff'] = submission_df['Team1_PointDiff'] - submission_df['Team2_PointDiff']
     
-    return submission_df 
+    return submission_df
+
+def merge_kenpom_features(games, kenpom_df):
+    """
+    Merge KenPom features into games DataFrame.
+    
+    Args:
+        games: DataFrame with game information.
+        kenpom_df: DataFrame with KenPom metrics.
+        
+    Returns:
+        games: DataFrame with new KenPom feature columns added.
+    """
+    # 首先检查必要的列是否存在
+    if kenpom_df.empty:
+        print("Warning: KenPom DataFrame is empty. No features will be added.")
+        return games
+    
+    # 检查KenPom数据中的列
+    print(f"Available columns in KenPom data: {kenpom_df.columns.tolist()}")
+    
+    # 检查是否有Season列，如果没有，尝试添加一个默认值
+    if 'Season' not in kenpom_df.columns:
+        # 如果有Year列，重命名为Season
+        if 'Year' in kenpom_df.columns:
+            kenpom_df.rename(columns={'Year': 'Season'}, inplace=True)
+        else:
+            # 如果没有季节信息，使用最近的赛季（2025）作为默认值
+            print("Warning: No 'Season' column found in KenPom data. Using 2025 as default.")
+            kenpom_df['Season'] = 2025
+    
+    # 检查是否有主要效率指标
+    efficiency_column = None
+    if 'AdjEM' in kenpom_df.columns:
+        efficiency_column = 'AdjEM'
+    elif 'AdjEff' in kenpom_df.columns:
+        efficiency_column = 'AdjEff'
+    elif 'NetRtg' in kenpom_df.columns:
+        efficiency_column = 'NetRtg'
+    else:
+        # 尝试找到可能的效率列
+        possible_columns = [col for col in kenpom_df.columns if 'Eff' in col or 'Rtg' in col or 'EM' in col]
+        if possible_columns:
+            efficiency_column = possible_columns[0]
+            print(f"Using '{efficiency_column}' as efficiency metric.")
+        else:
+            print("Warning: No efficiency metric found in KenPom data. Returning games without KenPom features.")
+            return games
+    
+    # Merge for Team1
+    kenpom_team1 = kenpom_df[['Season', 'TeamID', efficiency_column]].copy()
+    kenpom_team1.rename(columns={'TeamID': 'Team1', efficiency_column: 'Team1_AdjEM'}, inplace=True)
+    games = games.merge(kenpom_team1, how='left', on=['Season', 'Team1'])
+    
+    # Merge for Team2
+    kenpom_team2 = kenpom_df[['Season', 'TeamID', efficiency_column]].copy()
+    kenpom_team2.rename(columns={'TeamID': 'Team2', efficiency_column: 'Team2_AdjEM'}, inplace=True)
+    games = games.merge(kenpom_team2, how='left', on=['Season', 'Team2'])
+    
+    # Calculate difference feature
+    games['AdjEM_Diff'] = games['Team1_AdjEM'] - games['Team2_AdjEM']
+    print("KenPom features merged.")
+    
+    return games
