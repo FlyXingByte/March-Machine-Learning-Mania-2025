@@ -269,7 +269,11 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     submission_df['AvgAllowedDiff'] = submission_df['Team1_AvgAllowed'] - submission_df['Team2_AvgAllowed']
     submission_df['PointDiffDiff'] = submission_df['Team1_PointDiff'] - submission_df['Team2_PointDiff']
     
+    # 固定将提交数据的 GameType 设为 "Tournament"
+    submission_df['GameType'] = 'Tournament'
+    
     return submission_df
+
 
 def merge_kenpom_features(games, kenpom_df):
     """
@@ -300,6 +304,9 @@ def merge_kenpom_features(games, kenpom_df):
             print("Warning: No 'Season' column found in KenPom data. Using 2025 as default.")
             kenpom_df['Season'] = 2025
     
+    # 确保Season列是整数类型
+    kenpom_df['Season'] = kenpom_df['Season'].astype(int)
+    
     # 检查是否有主要效率指标
     efficiency_column = None
     if 'AdjEM' in kenpom_df.columns:
@@ -318,6 +325,18 @@ def merge_kenpom_features(games, kenpom_df):
             print("Warning: No efficiency metric found in KenPom data. Returning games without KenPom features.")
             return games
     
+    # 确保效率指标是数值类型
+    try:
+        kenpom_df[efficiency_column] = pd.to_numeric(kenpom_df[efficiency_column], errors='coerce')
+        # 检查是否有NaN值并处理
+        if kenpom_df[efficiency_column].isna().any():
+            print(f"Warning: Found {kenpom_df[efficiency_column].isna().sum()} NaN values in {efficiency_column}. Filling with median.")
+            kenpom_df[efficiency_column] = kenpom_df[efficiency_column].fillna(kenpom_df[efficiency_column].median())
+    except Exception as e:
+        print(f"Error converting {efficiency_column} to numeric: {e}")
+        print("Returning games without KenPom features.")
+        return games
+    
     # Merge for Team1
     kenpom_team1 = kenpom_df[['Season', 'TeamID', efficiency_column]].copy()
     kenpom_team1.rename(columns={'TeamID': 'Team1', efficiency_column: 'Team1_AdjEM'}, inplace=True)
@@ -327,6 +346,10 @@ def merge_kenpom_features(games, kenpom_df):
     kenpom_team2 = kenpom_df[['Season', 'TeamID', efficiency_column]].copy()
     kenpom_team2.rename(columns={'TeamID': 'Team2', efficiency_column: 'Team2_AdjEM'}, inplace=True)
     games = games.merge(kenpom_team2, how='left', on=['Season', 'Team2'])
+    
+    # 确保合并后的列是数值类型
+    games['Team1_AdjEM'] = pd.to_numeric(games['Team1_AdjEM'], errors='coerce').fillna(0)
+    games['Team2_AdjEM'] = pd.to_numeric(games['Team2_AdjEM'], errors='coerce').fillna(0)
     
     # Calculate difference feature
     games['AdjEM_Diff'] = games['Team1_AdjEM'] - games['Team2_AdjEM']

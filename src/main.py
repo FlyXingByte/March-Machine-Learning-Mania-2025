@@ -16,9 +16,13 @@ def parse_args():
                         help='Output file name for predictions')
     parser.add_argument('--verbose', type=int, default=1,
                         help='Verbosity level (0=minimal, 1=normal)')
+    parser.add_argument('--stage', type=int, default=2,
+                        help='Competition stage (1 or 2)')
+    parser.add_argument('--test_mode', action='store_true',
+                        help='Enable test mode to only use 10 games per year for quick testing')
     return parser.parse_args()
 
-def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbose=1):
+def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbose=1, stage=2, test_mode=False):
     """
     Run the entire March Mania prediction pipeline
 
@@ -27,11 +31,18 @@ def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbo
         start_year: Only include seasons from this year onwards
         output_file: Output file name for predictions
         verbose: Verbosity level (0=minimal, 1=normal)
+        stage: Competition stage (1 or 2)
+        test_mode: If True, only use 10 games per year for quick testing
     """
-    print(f"Running March Mania prediction pipeline from {start_year} onwards")
+    print(f"Running March Mania prediction pipeline from {start_year} onwards for Stage {stage}")
+    if test_mode:
+        print("TEST MODE ENABLED: Only using 10 games per year for quick testing")
+        print("This will significantly reduce the dataset size and speed up the pipeline")
+        print("Note: Results will be less accurate but useful for debugging the full pipeline flow")
     
     # Step 1: Load data
-    season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year)
+    season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year, stage, test_mode)
+    
     # 加载 KenPom 外部数据
     kenpom_df = data_loader.load_kenpom_data(data_path, teams)
     
@@ -93,6 +104,7 @@ def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbo
     
     print(f"Training data shape: {X_train.shape}")
     print(f"Prediction data shape: {X_test.shape}")
+    print(f"Submission data shape before modeling: {submission_df.shape}")
     
     # Step 11: Train models and predict
     print("Starting training and prediction...")
@@ -100,9 +112,14 @@ def run_pipeline(data_path, start_year=2018, output_file="submission.csv", verbo
     
     # Step 12: Generate submission file
     print("Generating submission file...")
+    print(f"Test predictions shape: {test_pred.shape}")
     final_submission = evaluation.generate_submission(submission_df, test_pred, output_file)
     
     print(f"Pipeline complete! Submission saved to {output_file}")
+    if test_mode:
+        print("Remember: This was run in TEST MODE with a reduced dataset.")
+        print("For actual competition predictions, run without the --test_mode flag.")
+    
     return final_submission
 
 if __name__ == "__main__":
@@ -111,5 +128,7 @@ if __name__ == "__main__":
         data_path=args.data_path,
         start_year=args.start_year,
         output_file=args.output_file,
-        verbose=args.verbose
+        verbose=args.verbose,
+        stage=args.stage,
+        test_mode=args.test_mode
     )

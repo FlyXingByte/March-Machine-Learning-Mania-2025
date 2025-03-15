@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import os
 
 def generate_submission(submission_df, test_pred, output_file='submission.csv'):
     """
@@ -13,13 +14,71 @@ def generate_submission(submission_df, test_pred, output_file='submission.csv'):
     Returns:
         DataFrame with ID and predictions
     """
-    final_submission = submission_df[['ID']].copy()
-    final_submission['Pred'] = test_pred.clip(0.001, 0.999)
+    # Fix submission format if needed
+    final_submission = fix_submission_format(submission_df, test_pred)
+    
+    # Save to file
     final_submission.to_csv(output_file, index=False)
     
     print_submission_stats(final_submission)
     
     return final_submission
+
+def fix_submission_format(submission_df, test_pred):
+    """
+    Fix submission format issues by adjusting the dataframe to match expected row counts
+    
+    Args:
+        submission_df: DataFrame with submission data
+        test_pred: Array of predictions
+        
+    Returns:
+        DataFrame with corrected format
+    """
+    expected_counts = [264628, 131407]  # submission_64.csv and SampleSubmissionStage2.csv counts
+    current_count = len(submission_df)
+    
+    if current_count in expected_counts:
+        print(f"Submission format already correct with {current_count} rows")
+        return submission_df
+    
+    print(f"Fixing submission format. Current count: {current_count}, Expected: {expected_counts}")
+    
+    # Check if we can find the sample submission file to use as reference
+    data_path = "Z:\\kaggle\\MMLM2025\\March-Machine-Learning-Mania-2025\\input\\march-machine-learning-mania-2025"
+    sample_file = None
+    
+    if os.path.exists(os.path.join(data_path, "SampleSubmissionStage2.csv")):
+        sample_file = os.path.join(data_path, "SampleSubmissionStage2.csv")
+        print(f"Using SampleSubmissionStage2.csv as reference")
+    elif os.path.exists(os.path.join(data_path, "SampleSubmissionStage1.csv")):
+        sample_file = os.path.join(data_path, "SampleSubmissionStage1.csv")
+        print(f"Using SampleSubmissionStage1.csv as reference")
+    
+    if sample_file:
+        print(f"Loading reference submission from {sample_file}")
+        reference_df = pd.read_csv(sample_file)
+        
+        # Create a mapping from ID to prediction
+        id_to_pred = dict(zip(submission_df['ID'], test_pred))
+        
+        # Create a new dataframe with the reference IDs
+        fixed_df = pd.DataFrame({'ID': reference_df['ID']})
+        
+        # Map predictions to the reference IDs
+        fixed_df['Pred'] = fixed_df['ID'].map(id_to_pred)
+        
+        # Fill missing predictions with 0.5 (random chance)
+        missing_count = fixed_df['Pred'].isna().sum()
+        if missing_count > 0:
+            print(f"Warning: {missing_count} IDs in reference not found in submission. Using 0.5 as prediction.")
+            fixed_df['Pred'] = fixed_df['Pred'].fillna(0.5)
+        
+        print(f"Final fixed dataframe has {len(fixed_df)} rows")
+        return fixed_df
+    
+    print("Warning: Could not find reference submission file. Returning original dataframe.")
+    return submission_df
 
 def print_submission_stats(submission_df):
     """
@@ -75,13 +134,26 @@ def prepare_dataset(games, submission_df, extract_agg_features=True):
                     'WOR', 'WDR', 'WAst', 'WTO', 'WStl', 'WBlk', 'WPF',
                     'LFGM', 'LFGA', 'LFGM3', 'LFGA3', 'LFTM', 'LFTA', 'LOR',
                     'LDR', 'LAst', 'LTO', 'LStl', 'LBlk', 'LPF', 'IDTeams_c_score',
-                    'Pred']
+                    'Pred']  # Removed 'Season' from exclude_cols
     
     features = [c for c in games.columns if c not in exclude_cols and c in submission_df.columns]
     print(f"Using {len(features)} features for training, sample features: {features[:5]}")
     
-    X_train = games[features].fillna(0)
-    y_train = games['WinA']
-    X_sub = submission_df[features].fillna(0)
+    # Ensure Season column is available for model training if it exists in games
+    if 'Season' in games.columns and 'Season' not in features:
+        # Create a copy of X_train with Season column added
+        X_train = games[features + ['Season']].fillna(0)
+        
+        # If submission data doesn't have Season, add a default season (e.g., 2025)
+        if 'Season' not in submission_df.columns:
+            X_sub = submission_df[features].fillna(0)
+            X_sub['Season'] = 2025  # Use the current competition year
+        else:
+            X_sub = submission_df[features + ['Season']].fillna(0)
+    else:
+        X_train = games[features].fillna(0)
+        X_sub = submission_df[features].fillna(0)
     
-    return X_train, y_train, X_sub, features 
+    y_train = games['WinA']
+    
+    return X_train, y_train, X_sub, features + (['Season'] if 'Season' in X_train.columns else []) 
