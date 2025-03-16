@@ -7,6 +7,11 @@ from xgboost import XGBClassifier
 from catboost import CatBoostClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.impute import SimpleImputer
+import lightgbm as lgb
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import DataLoader, TensorDataset
 
 def get_base_models():
     """
@@ -28,7 +33,35 @@ def get_base_models():
     model_rf = RandomForestClassifier(n_estimators=100, random_state=42)
     model_cat = CatBoostClassifier(iterations=300, verbose=0, random_seed=42)
     
-    return [model_xgb, model_lr, model_ridge, model_et, model_rf, model_cat]
+    # Add LightGBM model
+    model_lgb = lgb.LGBMClassifier(
+        n_estimators=300,
+        learning_rate=0.05,
+        num_leaves=31,
+        max_depth=-1,
+        min_child_samples=20,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        reg_alpha=0.1,
+        reg_lambda=0.1,
+        random_state=42,
+        verbose=-1,
+        importance_type='gain'
+    )
+    
+    # Add PyTorch MLP model (input_size will be set during fit)
+    model_mlp = PyTorchMLPWrapper(
+        input_size=None,  # Will be set during fit
+        hidden_size=128,
+        dropout_rate=0.3,
+        lr=0.001,
+        batch_size=64,
+        epochs=20,  # Reduced epochs for faster training
+        patience=5,  # Early stopping patience
+        random_state=42
+    )
+    
+    return [model_xgb, model_lr, model_ridge, model_et, model_rf, model_cat, model_lgb, model_mlp]
 
 def print_feature_importance(models, features):
     """
@@ -343,7 +376,7 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
             if col in model_features:
                 model_features.remove(col)
                 print(f"  Removed non-numeric feature: {col}")
-        
+            
         if len(model_features) == 0:
             print("Error: No numeric features available for training!")
             return np.zeros(X_test.shape[0])
@@ -451,3 +484,142 @@ def spread_predictions(preds, spread_factor=1.5):
     logits = np.log(preds / (1 - preds + 1e-8))
     spread_logits = logits * spread_factor
     return 1 / (1 + np.exp(-spread_logits))
+
+# PyTorch MLP model class
+class PyTorchMLP(nn.Module):
+    def __init__(self, input_size, hidden_size=128, dropout_rate=0.3):
+        super(PyTorchMLP, self).__init__()
+        self.model = nn.Sequential(
+            nn.Linear(input_size, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size, hidden_size // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout_rate),
+            nn.Linear(hidden_size // 2, 1),
+            nn.Sigmoid()
+        )
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.to(self.device)
+        
+    def forward(self, x):
+        return self.model(x).squeeze()
+
+# PyTorch wrapper for scikit-learn compatibility
+class PyTorchMLPWrapper:
+    def __init__(self, input_size, hidden_size=128, dropout_rate=0.3, 
+                 lr=0.001, batch_size=64, epochs=20, patience=5, random_state=42):
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.dropout_rate = dropout_rate
+        self.lr = lr
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.patience = patience
+        self.random_state = random_state
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = None
+        
+    def fit(self, X, y):
+        # Set random seeds for reproducibility
+        torch.manual_seed(self.random_state)
+        np.random.seed(self.random_state)
+        
+        # Initialize model
+        self.input_size = X.shape[1]
+        self.model = PyTorchMLP(self.input_size, self.hidden_size, self.dropout_rate)
+        
+        # Convert data to PyTorch tensors
+        X_tensor = torch.FloatTensor(X.values if hasattr(X, 'values') else X)
+        y_tensor = torch.FloatTensor(y.values if hasattr(y, 'values') else y)
+        
+        # Split data for early stopping
+        from sklearn.model_selection import train_test_split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_tensor, y_tensor, test_size=0.2, random_state=self.random_state
+        )
+        
+        # Create datasets and dataloaders
+        train_dataset = TensorDataset(X_train, y_train)
+        val_dataset = TensorDataset(X_val, y_val)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+        
+        # Define loss function and optimizer
+        criterion = nn.BCELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=self.lr)
+        
+        # Early stopping variables
+        best_val_loss = float('inf')
+        patience_counter = 0
+        
+        # Training loop
+        self.model.train()
+        for epoch in range(self.epochs):
+            # Training phase
+            self.model.train()
+            total_train_loss = 0
+            for inputs, targets in train_loader:
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                
+                # Forward pass
+                outputs = self.model(inputs)
+                loss = criterion(outputs, targets)
+                
+                # Backward pass and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                total_train_loss += loss.item()
+            
+            # Validation phase
+            self.model.eval()
+            total_val_loss = 0
+            with torch.no_grad():
+                for inputs, targets in val_loader:
+                    inputs = inputs.to(self.device)
+                    targets = targets.to(self.device)
+                    outputs = self.model(inputs)
+                    loss = criterion(outputs, targets)
+                    total_val_loss += loss.item()
+            
+            # Print progress every 5 epochs
+            if (epoch + 1) % 5 == 0:
+                print(f'Epoch [{epoch+1}/{self.epochs}], Train Loss: {total_train_loss/len(train_loader):.4f}, Val Loss: {total_val_loss/len(val_loader):.4f}')
+            
+            # Early stopping check
+            if total_val_loss < best_val_loss:
+                best_val_loss = total_val_loss
+                # Save best model state
+                best_model_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= self.patience:
+                    print(f'Early stopping at epoch {epoch+1}')
+                    # Restore best model
+                    self.model.load_state_dict(best_model_state)
+                    break
+        
+        return self
+    
+    def predict_proba(self, X):
+        if self.model is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        # Convert to tensor
+        X_tensor = torch.FloatTensor(X.values if hasattr(X, 'values') else X)
+        
+        # Prediction
+        self.model.eval()
+        with torch.no_grad():
+            X_tensor = X_tensor.to(self.device)
+            y_pred = self.model(X_tensor).cpu().numpy()
+        
+        # Return in the format expected by sklearn (with two columns: [1-p, p])
+        return np.column_stack((1 - y_pred, y_pred))
+    
+    def predict(self, X):
+        return self.predict_proba(X)[:, 1]
