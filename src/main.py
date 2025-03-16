@@ -25,9 +25,11 @@ def parse_args():
                         help='Enable test mode to only use 10 games per year for quick testing')
     parser.add_argument('--simulation_mode', action='store_true',
                         help='Enable simulation mode to train on 2021-2023 data + 2024 regular season data and evaluate on 2024 tournament data')
+    parser.add_argument('--use_extended_models', action='store_true',
+                        help='Use extended model set with model variants for greater diversity')
     return parser.parse_args()
 
-def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbose=1, stage=2, test_mode=False, simulation_mode=False):
+def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbose=1, stage=2, test_mode=False, simulation_mode=False, use_extended_models=False):
     """
     Run the entire March Mania prediction pipeline
 
@@ -39,6 +41,7 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         stage: Competition stage (1 or 2)
         test_mode: If True, only use 10 games per year for quick testing
         simulation_mode: If True, train on 2021-2023 data + 2024 regular season data and evaluate on 2024 tournament data
+        use_extended_models: If True, use extended model set with model variants for greater diversity
     """
     print(f"Running March Mania prediction pipeline from {start_year} onwards for Stage {stage}")
     if test_mode:
@@ -49,6 +52,10 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     if simulation_mode:
         print("SIMULATION MODE ENABLED: Training on 2021-2023 data + 2024 regular season data")
         print("Will evaluate model performance on 2024 tournament data")
+    
+    if use_extended_models:
+        print("EXTENDED MODELS ENABLED: Using a larger set of models with varied hyperparameters")
+        print("This will significantly increase training time but may improve prediction accuracy")
     
     # Step 1: Load data
     season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year, stage, test_mode)
@@ -199,12 +206,12 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     print(f"Submission data shape before modeling: {submission_df.shape}")
     
     # Find the best threshold based on Brier Score using time-series cross-validation on training data
-    best_threshold = find_best_threshold(X_train, y_train, features)
+    best_threshold = find_best_threshold(X_train, y_train, features, use_extended_models)
     print(f"Best threshold based on Brier Score: {best_threshold:.4f}")
     
     # Step 11: Train models and predict
     print("Starting training and prediction...")
-    test_pred = models.stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=verbose)
+    test_pred = models.stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=verbose, use_extended_models=use_extended_models)
     
     # Step 12: Generate submission file
     print("Generating submission file...")
@@ -217,7 +224,7 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         X_eval, y_eval, _, _ = evaluation.prepare_dataset(eval_data, None)
         
         print(f"Evaluation data shape: {X_eval.shape}")
-        eval_metrics = evaluate_model(X_train, y_train, X_eval, y_eval, features)
+        eval_metrics = evaluate_model(X_train, y_train, X_eval, y_eval, features, use_extended_models)
         
         # Save evaluation results
         eval_output = output_file.replace('.csv', '_eval_results.csv')
@@ -231,7 +238,7 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     
     return final_submission
 
-def evaluate_model(X_train, y_train, X_eval, y_eval, features):
+def evaluate_model(X_train, y_train, X_eval, y_eval, features, use_extended_models=False):
     """
     Evaluate model performance on the evaluation dataset
     
@@ -241,6 +248,7 @@ def evaluate_model(X_train, y_train, X_eval, y_eval, features):
         X_eval: Evaluation features
         y_eval: Evaluation target
         features: List of feature names
+        use_extended_models: Whether to use the extended model set
         
     Returns:
         Dictionary with evaluation metrics and best threshold
@@ -251,7 +259,7 @@ def evaluate_model(X_train, y_train, X_eval, y_eval, features):
     print("Evaluating model performance on 2024 tournament data...")
     
     # Train model using the same approach as for predictions
-    pred_eval = models.stacking_ensemble_cv(X_train, y_train, X_eval, features, verbose=1)
+    pred_eval = models.stacking_ensemble_cv(X_train, y_train, X_eval, features, verbose=1, use_extended_models=use_extended_models)
     
     # Calculate metrics
     metrics = {
@@ -270,7 +278,7 @@ def evaluate_model(X_train, y_train, X_eval, y_eval, features):
     
     return metrics
 
-def find_best_threshold(X_train, y_train, features):
+def find_best_threshold(X_train, y_train, features, use_extended_models=False):
     """
     Find the best threshold based on Brier Score using time-series cross-validation on training data
     
@@ -278,6 +286,7 @@ def find_best_threshold(X_train, y_train, features):
         X_train: Training features
         y_train: Training target
         features: List of feature names
+        use_extended_models: Whether to use the extended model set
         
     Returns:
         Best threshold value
@@ -324,7 +333,7 @@ def find_best_threshold(X_train, y_train, features):
         
         # 训练模型并在验证集上预测
         try:
-            val_pred = models.stacking_ensemble_cv(X_train_fold, y_train_fold, X_val_fold, features, verbose=0)
+            val_pred = models.stacking_ensemble_cv(X_train_fold, y_train_fold, X_val_fold, features, verbose=0, use_extended_models=use_extended_models)
             train_pred[val_idx] = val_pred
             train_indices_used[val_idx] = True
             print(f"  赛季 {season} 验证完成，验证集大小: {len(val_idx)}")
@@ -371,5 +380,6 @@ if __name__ == "__main__":
         verbose=args.verbose,
         stage=args.stage,
         test_mode=args.test_mode,
-        simulation_mode=args.simulation_mode
+        simulation_mode=args.simulation_mode,
+        use_extended_models=args.use_extended_models
     )

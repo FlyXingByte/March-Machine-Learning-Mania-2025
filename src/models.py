@@ -12,6 +12,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.linear_model import RidgeClassifier, SGDClassifier
+from sklearn.ensemble import GradientBoostingClassifier, AdaBoostClassifier, VotingClassifier, StackingClassifier, HistGradientBoostingClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.naive_bayes import GaussianNB
+from sklearn.neural_network import MLPClassifier
+from sklearn.tree import DecisionTreeClassifier
 
 def get_base_models():
     """
@@ -21,9 +29,6 @@ def get_base_models():
     Returns:
         List of initialized model objects.
     """
-    from sklearn.calibration import CalibratedClassifierCV
-    from sklearn.linear_model import RidgeClassifier
-
     model_xgb = XGBClassifier(objective='binary:logistic', eval_metric='logloss',
                               n_estimators=300, random_state=42)
     model_lr = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
@@ -61,7 +66,97 @@ def get_base_models():
         random_state=42
     )
     
-    return [model_xgb, model_lr, model_ridge, model_et, model_rf, model_cat, model_lgb, model_mlp]
+    # Add new models for ensemble diversity
+    
+    # Gradient Boosting Classifier
+    model_gb = GradientBoostingClassifier(
+        n_estimators=200,
+        learning_rate=0.05,
+        max_depth=4,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        subsample=0.8,
+        random_state=42
+    )
+    
+    # Histogram-based Gradient Boosting (faster version of GBM)
+    model_hgb = HistGradientBoostingClassifier(
+        max_iter=200,
+        learning_rate=0.05,
+        max_depth=4,
+        min_samples_leaf=10,
+        random_state=42
+    )
+    
+    # AdaBoost Classifier
+    model_ada = AdaBoostClassifier(
+        n_estimators=100,
+        learning_rate=0.1,
+        random_state=42
+    )
+    
+    # Support Vector Machine with probability calibration
+    model_svm = CalibratedClassifierCV(
+        SVC(kernel='rbf', C=1.0, probability=True, random_state=42),
+        cv=3
+    )
+    
+    # K-Nearest Neighbors
+    model_knn = KNeighborsClassifier(
+        n_neighbors=15,
+        weights='distance'
+    )
+    
+    # Gaussian Naive Bayes
+    model_gnb = GaussianNB()
+    
+    # Scikit-learn MLP (Neural Network)
+    model_sklearn_mlp = MLPClassifier(
+        hidden_layer_sizes=(100, 50),
+        activation='relu',
+        solver='adam',
+        alpha=0.0001,
+        batch_size='auto',
+        learning_rate='adaptive',
+        max_iter=200,
+        early_stopping=True,
+        random_state=42
+    )
+    
+    # SGD Classifier with calibration
+    model_sgd = CalibratedClassifierCV(
+        SGDClassifier(loss='log_loss', penalty='elasticnet', 
+                     alpha=0.0001, l1_ratio=0.15,
+                     max_iter=1000, random_state=42),
+        cv=3
+    )
+    
+    # Decision Tree Classifier
+    model_dt = DecisionTreeClassifier(
+        max_depth=5,
+        min_samples_split=5,
+        min_samples_leaf=2,
+        random_state=42
+    )
+    
+    # Add the new deep neural network model
+    model_deep_nn = PyTorchDeepNNWrapper(
+        input_size=None,  # Will be set during fit
+        hidden_sizes=[256, 128, 64],
+        dropout_rates=[0.3, 0.3, 0.3],
+        lr=0.001,
+        batch_size=64,
+        epochs=25,  # Reduced epochs for faster training
+        patience=6,  # Early stopping patience
+        random_state=42
+    )
+    
+    # Return all models
+    return [
+        model_xgb, model_lr, model_ridge, model_et, model_rf, model_cat, model_lgb, model_mlp,
+        model_gb, model_hgb, model_ada, model_svm, model_knn, model_gnb, model_sklearn_mlp, model_sgd, model_dt,
+        model_deep_nn
+    ]
 
 def print_feature_importance(models, features):
     """
@@ -92,7 +187,7 @@ def flatten_dataframe_columns(df):
     return pd.DataFrame({col: (val if not isinstance(val, pd.DataFrame) else val.iloc[:, 0])
                          for col, val in df.items()}, index=df.index)
 
-def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
+def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_extended_models=True):
     """
     Perform time-series cross-validation with stacking ensemble using out-of-fold meta model training.
     Modified to use only tournament games for validation in each fold, while training on all available data.
@@ -103,6 +198,7 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
         X_test: Test features DataFrame.
         features: List of feature names.
         verbose: Whether to print detailed training information.
+        use_extended_models: Whether to use the extended model set (including model variants).
         
     Returns:
         Array of predictions for the test set.
@@ -124,6 +220,7 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
     meta_labels_all = []
     test_meta_features_all = []
     cv_scores = []  # For reporting out-of-fold Brier scores
+    model_performances = []  # Track individual model performances
 
     # Exclude 'Season' from features during model training.
     model_features = [c for c in features if c != 'Season']
@@ -224,9 +321,16 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
             test_norm = flatten_dataframe_columns(test_norm)
             
             # Train base models and collect meta features (out-of-fold predictions)
-            base_models = get_base_models()
+            if use_extended_models:
+                print("Using extended model set with model variants for greater diversity")
+                base_models = get_extended_models()
+            else:
+                base_models = get_base_models()
+                
             val_preds = []
             test_preds = []
+            fold_model_performances = []  # Track performance for this fold
+            
             for i, model in enumerate(base_models):
                 model_name = model.__class__.__name__
                 if verbose:
@@ -235,7 +339,7 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
                     model.fit(train_norm, train_y)
                 except ValueError as e:
                     if "3-fold" in str(e):
-                        print("Warning: Not enough samples for calibration in CalibratedClassifierCV, using uncalibrated base estimator for this fold.")
+                        print(f"Warning: Not enough samples for calibration in {model_name}, using uncalibrated base estimator for this fold.")
                         base_est = model.estimator  
                         base_est.fit(train_norm, train_y)
                         if hasattr(base_est, "predict_proba"):
@@ -251,6 +355,10 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
                             test_pred = np.full(test_norm.shape[0], 0.5)
                         val_preds.append(val_pred)
                         test_preds.append(test_pred)
+                        
+                        # Calculate model performance (Brier score)
+                        model_brier = brier_score_loss(val_y, val_pred)
+                        fold_model_performances.append((i, model_name, model_brier))
                         continue
                     else:
                         raise
@@ -268,8 +376,19 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
                     test_pred = model.predict(test_norm)
                     val_pred = np.clip((val_pred - val_pred.min()) / (val_pred.max() - val_pred.min() + 1e-8), 0, 1)
                     test_pred = np.clip((test_pred - test_pred.min()) / (test_pred.max() - test_pred.min() + 1e-8), 0, 1)
+                
                 val_preds.append(val_pred)
                 test_preds.append(test_pred)
+                
+                # Calculate model performance (Brier score)
+                model_brier = brier_score_loss(val_y, val_pred)
+                fold_model_performances.append((i, model_name, model_brier))
+                
+                if verbose:
+                    print(f"    {model_name} Brier score: {model_brier:.4f}")
+            
+            # Store model performances for this fold
+            model_performances.append(fold_model_performances)
             
             # Construct meta features for the current fold
             meta_X_val_fold = np.column_stack(val_preds)
@@ -295,6 +414,40 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
         # Average test meta features across folds
         meta_test = np.mean(np.array(test_meta_features_all), axis=0)
         
+        # Calculate average model performance across folds
+        avg_model_performance = {}
+        for fold_performances in model_performances:
+            for idx, name, score in fold_performances:
+                if name not in avg_model_performance:
+                    avg_model_performance[name] = []
+                avg_model_performance[name].append(score)
+        
+        # Calculate average Brier score for each model
+        for name, scores in avg_model_performance.items():
+            avg_model_performance[name] = np.mean(scores)
+        
+        if verbose:
+            print("\nAverage model performance across folds:")
+            for name, avg_score in sorted(avg_model_performance.items(), key=lambda x: x[1]):
+                print(f"  {name}: {avg_score:.4f}")
+        
+        # Use weighted meta-model based on model performance
+        # Convert Brier scores to weights (lower Brier score = higher weight)
+        model_weights = {}
+        for name, score in avg_model_performance.items():
+            # Invert and normalize the Brier score (lower is better)
+            model_weights[name] = 1.0 / (score + 1e-8)
+        
+        # Normalize weights to sum to 1
+        total_weight = sum(model_weights.values())
+        for name in model_weights:
+            model_weights[name] /= total_weight
+        
+        if verbose:
+            print("\nModel weights for ensemble:")
+            for name, weight in sorted(model_weights.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {name}: {weight:.4f}")
+        
         # Train final meta-model on full out-of-fold predictions
         meta_model = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
         if verbose:
@@ -307,8 +460,20 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
             for i, coef in enumerate(meta_model.coef_[0]):
                 model_name = get_base_models()[i].__class__.__name__
                 print(f"    {model_name}: {coef:.4f}")
+        
         # Predict test set using final meta-model
         test_pred_ensemble = meta_model.predict_proba(meta_test)[:, 1]
+        
+        # Also create a weighted average prediction based on model performance
+        weighted_test_pred = np.zeros(meta_test.shape[0])
+        for i, model in enumerate(get_base_models()):
+            model_name = model.__class__.__name__
+            if model_name in model_weights:
+                weighted_test_pred += meta_test[:, i] * model_weights[model_name]
+        
+        # Blend the meta-model prediction with the weighted average (70% meta-model, 30% weighted average)
+        final_blend_pred = 0.7 * test_pred_ensemble + 0.3 * weighted_test_pred
+        test_pred_ensemble = final_blend_pred
     
     else:
         # Regular cross-validation branch (non-time-series)
@@ -403,17 +568,25 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
         test_norm = flatten_dataframe_columns(test_norm)
         
         # Collect out-of-fold meta features using inner CV split
-        base_models = get_base_models()
+        if use_extended_models:
+            print("Using extended model set with model variants for greater diversity")
+            base_models = get_extended_models()
+        else:
+            base_models = get_base_models()
+            
         val_preds = []
         test_preds = []
+        model_performances = []  # Track model performances
+        
         for i, model in enumerate(base_models):
+            model_name = model.__class__.__name__
             if verbose:
-                print(f"  Training base model {i+1}/{len(base_models)}: {model.__class__.__name__}")
+                print(f"  Training base model {i+1}/{len(base_models)}: {model_name}")
             try:
                 model.fit(train_norm, train_y)
             except ValueError as e:
                 if "3-fold" in str(e):
-                    print("Warning: Not enough samples for calibration in CalibratedClassifierCV, using uncalibrated base estimator for this split.")
+                    print(f"Warning: Not enough samples for calibration in {model_name}, using uncalibrated base estimator for this split.")
                     base_est = model.estimator
                     base_est.fit(train_norm, train_y)
                     if hasattr(base_est, "predict_proba"):
@@ -429,6 +602,10 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
                         test_pred = np.full(test_norm.shape[0], 0.5)
                     val_preds.append(val_pred)
                     test_preds.append(test_pred)
+                    
+                    # Calculate model performance
+                    model_brier = brier_score_loss(val_y, val_pred)
+                    model_performances.append((i, model_name, model_brier))
                     continue
                 else:
                     raise
@@ -446,11 +623,44 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
                 test_pred = model.predict(test_norm)
                 val_pred = np.clip((val_pred - val_pred.min()) / (val_pred.max() - val_pred.min() + 1e-8), 0, 1)
                 test_pred = np.clip((test_pred - test_pred.min()) / (test_pred.max() - test_pred.min() + 1e-8), 0, 1)
+            
             val_preds.append(val_pred)
             test_preds.append(test_pred)
+            
+            # Calculate model performance
+            model_brier = brier_score_loss(val_y, val_pred)
+            model_performances.append((i, model_name, model_brier))
+            
+            if verbose:
+                print(f"    {model_name} Brier score: {model_brier:.4f}")
+        
+        # Convert model performances to a dictionary
+        model_perf_dict = {name: score for _, name, score in model_performances}
+        
+        if verbose:
+            print("\nModel performance:")
+            for name, score in sorted(model_perf_dict.items(), key=lambda x: x[1]):
+                print(f"  {name}: {score:.4f}")
+        
+        # Calculate model weights (lower Brier score = higher weight)
+        model_weights = {}
+        for name, score in model_perf_dict.items():
+            model_weights[name] = 1.0 / (score + 1e-8)
+        
+        # Normalize weights to sum to 1
+        total_weight = sum(model_weights.values())
+        for name in model_weights:
+            model_weights[name] /= total_weight
+        
+        if verbose:
+            print("\nModel weights for ensemble:")
+            for name, weight in sorted(model_weights.items(), key=lambda x: x[1], reverse=True):
+                print(f"  {name}: {weight:.4f}")
         
         meta_X_train = np.column_stack(val_preds)
         meta_test = np.column_stack(test_preds)
+        
+        # Train meta-model
         meta_model = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
         if verbose:
             print("Training final meta-model (Logistic Regression) on out-of-fold predictions")
@@ -462,7 +672,20 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1):
             for i, coef in enumerate(meta_model.coef_[0]):
                 model_name = get_base_models()[i].__class__.__name__
                 print(f"    {model_name}: {coef:.4f}")
+        
+        # Predict using meta-model
         test_pred_ensemble = meta_model.predict_proba(meta_test)[:, 1]
+        
+        # Create weighted average prediction
+        weighted_test_pred = np.zeros(meta_test.shape[0])
+        for i, model in enumerate(get_base_models()):
+            model_name = model.__class__.__name__
+            if model_name in model_weights:
+                weighted_test_pred += meta_test[:, i] * model_weights[model_name]
+        
+        # Blend the meta-model prediction with the weighted average (70% meta-model, 30% weighted average)
+        final_blend_pred = 0.7 * test_pred_ensemble + 0.3 * weighted_test_pred
+        test_pred_ensemble = final_blend_pred
     
     if len(cv_scores) > 0:
         print(f"\n[Stacking] Average temporary fold Brier Score: {np.mean(cv_scores):.4f}")
@@ -623,3 +846,325 @@ class PyTorchMLPWrapper:
     
     def predict(self, X):
         return self.predict_proba(X)[:, 1]
+
+class PyTorchDeepNN(nn.Module):
+    def __init__(self, input_size, hidden_sizes=[256, 128, 64], dropout_rates=[0.3, 0.3, 0.3]):
+        """
+        A deeper neural network with multiple hidden layers, batch normalization, and residual connections.
+        
+        Args:
+            input_size: Number of input features
+            hidden_sizes: List of hidden layer sizes
+            dropout_rates: List of dropout rates for each hidden layer
+        """
+        super(PyTorchDeepNN, self).__init__()
+        
+        self.input_size = input_size
+        self.hidden_sizes = hidden_sizes
+        self.dropout_rates = dropout_rates
+        
+        # Input layer
+        layers = [nn.Linear(input_size, hidden_sizes[0])]
+        layers.append(nn.BatchNorm1d(hidden_sizes[0]))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(dropout_rates[0]))
+        
+        # Hidden layers with residual connections where possible
+        for i in range(1, len(hidden_sizes)):
+            # Main path
+            layers.append(nn.Linear(hidden_sizes[i-1], hidden_sizes[i]))
+            layers.append(nn.BatchNorm1d(hidden_sizes[i]))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rates[i]))
+            
+            # Add residual connection if dimensions match
+            if hidden_sizes[i-1] == hidden_sizes[i]:
+                # Identity residual connection
+                self.has_residual = True
+            else:
+                self.has_residual = False
+        
+        # Output layer
+        layers.append(nn.Linear(hidden_sizes[-1], 1))
+        layers.append(nn.Sigmoid())
+        
+        self.main_path = nn.ModuleList(layers)
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.to(self.device)
+    
+    def forward(self, x):
+        # Process through layers with residual connections
+        layer_input = x
+        residual = None
+        layer_idx = 0
+        
+        for i, layer in enumerate(self.main_path[:-2]):  # Exclude final Linear and Sigmoid
+            if isinstance(layer, nn.Linear):
+                if i > 0 and self.has_residual and residual is not None:
+                    # Apply residual connection
+                    layer_input = layer_input + residual
+                
+                # Process through linear layer
+                layer_output = layer(layer_input)
+                
+                # Store for potential residual connection
+                if layer_idx < len(self.hidden_sizes) - 1:
+                    residual = layer_output
+                
+                layer_input = layer_output
+                layer_idx += 1
+            else:
+                # Process through non-linear layers
+                layer_input = layer(layer_input)
+        
+        # Final output layers
+        output = self.main_path[-2](layer_input)  # Linear
+        output = self.main_path[-1](output)       # Sigmoid
+        
+        return output.squeeze()
+
+class PyTorchDeepNNWrapper:
+    def __init__(self, input_size=None, hidden_sizes=[256, 128, 64], dropout_rates=[0.3, 0.3, 0.3],
+                 lr=0.001, batch_size=64, epochs=30, patience=7, random_state=42):
+        """
+        Wrapper for PyTorchDeepNN to make it compatible with scikit-learn.
+        
+        Args:
+            input_size: Number of input features (will be set during fit if None)
+            hidden_sizes: List of hidden layer sizes
+            dropout_rates: List of dropout rates for each hidden layer
+            lr: Learning rate
+            batch_size: Batch size for training
+            epochs: Maximum number of epochs
+            patience: Early stopping patience
+            random_state: Random seed for reproducibility
+        """
+        self.input_size = input_size
+        self.hidden_sizes = hidden_sizes
+        self.dropout_rates = dropout_rates
+        self.lr = lr
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.patience = patience
+        self.random_state = random_state
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        self.model = None
+        
+    def fit(self, X, y):
+        # Set random seeds for reproducibility
+        torch.manual_seed(self.random_state)
+        np.random.seed(self.random_state)
+        
+        # Initialize model
+        self.input_size = X.shape[1]
+        self.model = PyTorchDeepNN(self.input_size, self.hidden_sizes, self.dropout_rates)
+        
+        # Convert data to PyTorch tensors
+        X_tensor = torch.FloatTensor(X.values if hasattr(X, 'values') else X)
+        y_tensor = torch.FloatTensor(y.values if hasattr(y, 'values') else y)
+        
+        # Split data for early stopping
+        from sklearn.model_selection import train_test_split
+        X_train, X_val, y_train, y_val = train_test_split(
+            X_tensor, y_tensor, test_size=0.2, random_state=self.random_state
+        )
+        
+        # Create datasets and dataloaders
+        train_dataset = TensorDataset(X_train, y_train)
+        val_dataset = TensorDataset(X_val, y_val)
+        train_loader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True)
+        val_loader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False)
+        
+        # Define loss function and optimizer
+        criterion = nn.BCELoss()
+        optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=1e-5)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=3, verbose=True)
+        
+        # Early stopping variables
+        best_val_loss = float('inf')
+        patience_counter = 0
+        
+        # Training loop
+        self.model.train()
+        for epoch in range(self.epochs):
+            # Training phase
+            self.model.train()
+            total_train_loss = 0
+            for inputs, targets in train_loader:
+                inputs = inputs.to(self.device)
+                targets = targets.to(self.device)
+                
+                # Forward pass
+                outputs = self.model(inputs)
+                loss = criterion(outputs, targets)
+                
+                # Backward pass and optimize
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                
+                total_train_loss += loss.item()
+            
+            # Validation phase
+            self.model.eval()
+            total_val_loss = 0
+            with torch.no_grad():
+                for inputs, targets in val_loader:
+                    inputs = inputs.to(self.device)
+                    targets = targets.to(self.device)
+                    outputs = self.model(inputs)
+                    loss = criterion(outputs, targets)
+                    total_val_loss += loss.item()
+            
+            # Update learning rate scheduler
+            scheduler.step(total_val_loss)
+            
+            # Print progress every 5 epochs
+            if (epoch + 1) % 5 == 0:
+                print(f'Epoch [{epoch+1}/{self.epochs}], Train Loss: {total_train_loss/len(train_loader):.4f}, Val Loss: {total_val_loss/len(val_loader):.4f}')
+            
+            # Early stopping check
+            if total_val_loss < best_val_loss:
+                best_val_loss = total_val_loss
+                # Save best model state
+                best_model_state = {k: v.cpu().clone() for k, v in self.model.state_dict().items()}
+                patience_counter = 0
+            else:
+                patience_counter += 1
+                if patience_counter >= self.patience:
+                    print(f'Early stopping at epoch {epoch+1}')
+                    # Restore best model
+                    self.model.load_state_dict(best_model_state)
+                    break
+        
+        return self
+    
+    def predict_proba(self, X):
+        if self.model is None:
+            raise ValueError("Model has not been fitted yet.")
+        
+        # Convert to tensor
+        X_tensor = torch.FloatTensor(X.values if hasattr(X, 'values') else X)
+        
+        # Prediction
+        self.model.eval()
+        with torch.no_grad():
+            X_tensor = X_tensor.to(self.device)
+            y_pred = self.model(X_tensor).cpu().numpy()
+        
+        # Return in the format expected by sklearn (with two columns: [1-p, p])
+        return np.column_stack((1 - y_pred, y_pred))
+    
+    def predict(self, X):
+        return self.predict_proba(X)[:, 1]
+
+def create_custom_ensemble():
+    """
+    Create a custom ensemble model that combines multiple models with different hyperparameters.
+    This provides additional diversity to the ensemble beyond the base models.
+    
+    Returns:
+        List of initialized model objects with varied hyperparameters.
+    """
+    from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier, ExtraTreesClassifier
+    
+    custom_models = []
+    
+    # XGBoost variants
+    xgb_variants = [
+        XGBClassifier(objective='binary:logistic', eval_metric='logloss', n_estimators=200, 
+                     learning_rate=0.05, max_depth=4, subsample=0.8, colsample_bytree=0.8, 
+                     random_state=42),
+        XGBClassifier(objective='binary:logistic', eval_metric='logloss', n_estimators=300, 
+                     learning_rate=0.03, max_depth=5, subsample=0.7, colsample_bytree=0.7, 
+                     random_state=43),
+        XGBClassifier(objective='binary:logistic', eval_metric='logloss', n_estimators=400, 
+                     learning_rate=0.01, max_depth=6, subsample=0.9, colsample_bytree=0.9, 
+                     random_state=44)
+    ]
+    custom_models.extend(xgb_variants)
+    
+    # LightGBM variants
+    lgb_variants = [
+        lgb.LGBMClassifier(n_estimators=200, learning_rate=0.05, num_leaves=31, max_depth=5,
+                          subsample=0.8, colsample_bytree=0.8, random_state=42),
+        lgb.LGBMClassifier(n_estimators=300, learning_rate=0.03, num_leaves=63, max_depth=7,
+                          subsample=0.7, colsample_bytree=0.7, random_state=43),
+        lgb.LGBMClassifier(n_estimators=400, learning_rate=0.01, num_leaves=127, max_depth=9,
+                          subsample=0.9, colsample_bytree=0.9, random_state=44)
+    ]
+    custom_models.extend(lgb_variants)
+    
+    # CatBoost variants
+    cat_variants = [
+        CatBoostClassifier(iterations=200, learning_rate=0.05, depth=4, verbose=0, random_seed=42),
+        CatBoostClassifier(iterations=300, learning_rate=0.03, depth=6, verbose=0, random_seed=43),
+        CatBoostClassifier(iterations=400, learning_rate=0.01, depth=8, verbose=0, random_seed=44)
+    ]
+    custom_models.extend(cat_variants)
+    
+    # Random Forest variants
+    rf_variants = [
+        RandomForestClassifier(n_estimators=100, max_depth=10, min_samples_split=5, random_state=42),
+        RandomForestClassifier(n_estimators=200, max_depth=15, min_samples_split=10, random_state=43),
+        RandomForestClassifier(n_estimators=300, max_depth=None, min_samples_split=2, random_state=44)
+    ]
+    custom_models.extend(rf_variants)
+    
+    # Extra Trees variants
+    et_variants = [
+        ExtraTreesClassifier(n_estimators=100, max_depth=10, min_samples_split=5, random_state=42),
+        ExtraTreesClassifier(n_estimators=200, max_depth=15, min_samples_split=10, random_state=43),
+        ExtraTreesClassifier(n_estimators=300, max_depth=None, min_samples_split=2, random_state=44)
+    ]
+    custom_models.extend(et_variants)
+    
+    # Gradient Boosting variants
+    gb_variants = [
+        GradientBoostingClassifier(n_estimators=100, learning_rate=0.1, max_depth=3, random_state=42),
+        GradientBoostingClassifier(n_estimators=200, learning_rate=0.05, max_depth=4, random_state=43),
+        GradientBoostingClassifier(n_estimators=300, learning_rate=0.01, max_depth=5, random_state=44)
+    ]
+    custom_models.extend(gb_variants)
+    
+    # PyTorch MLP variants
+    mlp_variants = [
+        PyTorchMLPWrapper(input_size=None, hidden_size=64, dropout_rate=0.2, lr=0.001, 
+                         batch_size=32, epochs=15, patience=5, random_state=42),
+        PyTorchMLPWrapper(input_size=None, hidden_size=128, dropout_rate=0.3, lr=0.0005, 
+                         batch_size=64, epochs=20, patience=5, random_state=43),
+        PyTorchMLPWrapper(input_size=None, hidden_size=256, dropout_rate=0.4, lr=0.0001, 
+                         batch_size=128, epochs=25, patience=5, random_state=44)
+    ]
+    custom_models.extend(mlp_variants)
+    
+    # Deep NN variants
+    deep_nn_variants = [
+        PyTorchDeepNNWrapper(input_size=None, hidden_sizes=[128, 64], dropout_rates=[0.2, 0.2],
+                            lr=0.001, batch_size=64, epochs=20, patience=5, random_state=42),
+        PyTorchDeepNNWrapper(input_size=None, hidden_sizes=[256, 128, 64], dropout_rates=[0.3, 0.3, 0.3],
+                            lr=0.0005, batch_size=64, epochs=25, patience=6, random_state=43),
+        PyTorchDeepNNWrapper(input_size=None, hidden_sizes=[512, 256, 128, 64], dropout_rates=[0.4, 0.4, 0.4, 0.4],
+                            lr=0.0001, batch_size=64, epochs=30, patience=7, random_state=44)
+    ]
+    custom_models.extend(deep_nn_variants)
+    
+    return custom_models
+
+def get_extended_models():
+    """
+    Get an extended set of models for the ensemble, including base models and custom ensemble models.
+    
+    Returns:
+        List of initialized model objects.
+    """
+    # Get base models
+    base_models = get_base_models()
+    
+    # Get custom ensemble models
+    custom_models = create_custom_ensemble()
+    
+    # Combine all models
+    all_models = base_models + custom_models
+    
+    return all_models
