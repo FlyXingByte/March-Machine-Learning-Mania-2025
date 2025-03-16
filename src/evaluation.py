@@ -136,24 +136,125 @@ def prepare_dataset(games, submission_df, extract_agg_features=True):
                     'LDR', 'LAst', 'LTO', 'LStl', 'LBlk', 'LPF', 'IDTeams_c_score',
                     'Pred']  # Removed 'Season' from exclude_cols
     
-    features = [c for c in games.columns if c not in exclude_cols and c in submission_df.columns]
-    print(f"Using {len(features)} features for training, sample features: {features[:5]}")
+    features = [c for c in games.columns if c not in exclude_cols and c in submission_df.columns] if submission_df is not None else [c for c in games.columns if c not in exclude_cols]
+    
+    if submission_df is not None:
+        print(f"Using {len(features)} features for training, sample features: {features[:5]}")
     
     # Ensure Season column is available for model training if it exists in games
     if 'Season' in games.columns and 'Season' not in features:
         # Create a copy of X_train with Season column added
         X_train = games[features + ['Season']].fillna(0)
         
-        # If submission data doesn't have Season, add a default season (e.g., 2025)
-        if 'Season' not in submission_df.columns:
-            X_sub = submission_df[features].fillna(0)
-            X_sub['Season'] = 2025  # Use the current competition year
+        # If submission data is provided
+        if submission_df is not None:
+            # If submission data doesn't have Season, add a default season (e.g., 2025)
+            if 'Season' not in submission_df.columns:
+                X_sub = submission_df[features].fillna(0)
+                X_sub['Season'] = 2025  # Use the current competition year
+            else:
+                X_sub = submission_df[features + ['Season']].fillna(0)
         else:
-            X_sub = submission_df[features + ['Season']].fillna(0)
+            X_sub = None
     else:
         X_train = games[features].fillna(0)
-        X_sub = submission_df[features].fillna(0)
+        X_sub = submission_df[features].fillna(0) if submission_df is not None else None
     
     y_train = games['WinA']
     
-    return X_train, y_train, X_sub, features + (['Season'] if 'Season' in X_train.columns else []) 
+    return X_train, y_train, X_sub, features + (['Season'] if 'Season' in X_train.columns else [])
+
+def evaluate_model(X_train, y_train, X_eval, y_eval, features):
+    """
+    Evaluate model performance on the evaluation dataset
+    
+    Args:
+        X_train: Training features
+        y_train: Training target
+        X_eval: Evaluation features
+        y_eval: Evaluation target
+        features: List of feature names
+        
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
+    import models  # Import here to avoid circular imports
+    
+    print("Evaluating model performance on 2024 tournament data...")
+    
+    # Train model using the same approach as for predictions
+    pred_eval = models.stacking_ensemble_cv(X_train, y_train, X_eval, features, verbose=1)
+    
+    # Calculate metrics
+    metrics = {
+        'log_loss': log_loss(y_eval, pred_eval),
+        'accuracy': accuracy_score(y_eval, pred_eval > 0.5),
+        'roc_auc': roc_auc_score(y_eval, pred_eval)
+    }
+    
+    # Calculate accuracy at different prediction thresholds
+    thresholds = [0.55, 0.6, 0.65, 0.7, 0.75, 0.8]
+    for thresh in thresholds:
+        high_conf_mask = (pred_eval >= thresh) | (pred_eval <= (1-thresh))
+        if high_conf_mask.sum() > 0:
+            high_conf_acc = accuracy_score(
+                y_eval[high_conf_mask], 
+                pred_eval[high_conf_mask] > 0.5
+            )
+            metrics[f'accuracy_{thresh}'] = high_conf_acc
+            metrics[f'coverage_{thresh}'] = high_conf_mask.mean()
+    
+    # Print metrics
+    print("\nEvaluation Metrics:")
+    print(f"Log Loss: {metrics['log_loss']:.4f}")
+    print(f"Accuracy: {metrics['accuracy']:.4f}")
+    print(f"ROC AUC: {metrics['roc_auc']:.4f}")
+    
+    print("\nAccuracy at different confidence thresholds:")
+    for thresh in thresholds:
+        if f'accuracy_{thresh}' in metrics:
+            coverage = metrics[f'coverage_{thresh}'] * 100
+            acc = metrics[f'accuracy_{thresh}'] * 100
+            print(f"  Threshold {thresh}: {acc:.1f}% accuracy ({coverage:.1f}% of predictions)")
+    
+    # Create a DataFrame with predicted probabilities and actual outcomes
+    eval_df = pd.DataFrame({
+        'Prediction': pred_eval,
+        'Actual': y_eval
+    })
+    
+    # Analyze model performance by prediction range
+    print("\nPerformance by prediction range:")
+    bins = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]
+    bin_labels = [f"{bins[i]:.1f}-{bins[i+1]:.1f}" for i in range(len(bins)-1)]
+    
+    eval_df['bin'] = pd.cut(eval_df['Prediction'], bins=bins, labels=bin_labels)
+    bin_analysis = eval_df.groupby('bin').agg(
+        count=('Actual', 'count'),
+        actual_win_rate=('Actual', 'mean')
+    ).reset_index()
+    
+    for _, row in bin_analysis.iterrows():
+        bin_range = row['bin']
+        count = row['count']
+        win_rate = row['actual_win_rate'] * 100
+        print(f"  {bin_range}: {count} games, {win_rate:.1f}% actual win rate")
+    
+    return metrics
+
+def save_evaluation_results(metrics, output_file):
+    """
+    Save evaluation results to CSV file
+    
+    Args:
+        metrics: Dictionary with evaluation metrics
+        output_file: Path to output file
+    """
+    # Convert metrics to DataFrame
+    metrics_df = pd.DataFrame([metrics])
+    
+    # Save to CSV
+    metrics_df.to_csv(output_file, index=False)
+    
+    print(f"Evaluation metrics saved to {output_file}") 

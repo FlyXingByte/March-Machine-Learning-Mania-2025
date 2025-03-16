@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import re
 
 def feature_engineering(games, seed_dict):
     """
@@ -7,11 +8,11 @@ def feature_engineering(games, seed_dict):
     - Generate game IDs and order teams.
     - Map seed values and calculate seed differences and strengths.
     - Generate target variable.
-
+    
     Args:
         games: DataFrame with game data
         seed_dict: Dictionary mapping Season_TeamID to seed value
-
+        
     Returns:
         DataFrame with engineered features
     """
@@ -47,78 +48,131 @@ def feature_engineering(games, seed_dict):
     
     return games
 
-def add_team_features(games):
+def add_team_features(games, current_season=None, num_prev_tournaments=3):
     """
-    Add historical performance features for each team based on entire season stats
-
-    Args:
-        games: DataFrame with game data
-
-    Returns:
-        Tuple of (DataFrame with added features, team_stats dictionary)
-    """
-    print("Calculating team historical statistics...")
+    Add team statistics based on regular season games only, using Season_TeamID as key.
+    This avoids data leakage by ensuring tournament data is not used for feature generation.
     
+    Args:
+        games: DataFrame with game data. Must contain 'Season', 'DayNum', and 'GameType' columns.
+        current_season: Current season year (if None, use max Season in games)
+        num_prev_tournaments: Not used here; kept for interface consistency.
+    
+    Returns:
+        Tuple: (DataFrame with added team features, team_stats_cum dictionary)
+    """
+    print("计算团队统计特征（仅使用常规赛数据，避免数据泄露）...")
+    if current_season is None:
+        current_season = games['Season'].max()
+    
+    # Initialize team statistics with default values
+    games['Team1_WinRate'] = 0.5
+    games['Team1_AvgScore'] = 60
+    games['Team1_AvgAllowed'] = 60
+    games['Team1_PointDiff'] = 0
+    games['Team1_GamesPlayed'] = 0
+    games['Team2_WinRate'] = 0.5
+    games['Team2_AvgScore'] = 60
+    games['Team2_AvgAllowed'] = 60
+    games['Team2_PointDiff'] = 0
+    games['Team2_GamesPlayed'] = 0
+    
+    if 'GameType' not in games.columns:
+        print("GameType列未找到，无法区分常规赛和锦标赛。添加默认GameType列...")
+        games['GameType'] = 'Regular'  # 默认为常规赛
+    
+    # Create a copy with only regular season data
+    regular_games = games[games['GameType'] == 'Regular'].copy()
+    
+    if regular_games.empty:
+        print("没有找到常规赛数据，使用所有数据计算团队统计信息...")
+        regular_games = games.copy()
+    
+    # Sort by Season and DayNum to ensure correct order
+    regular_games = regular_games.sort_values(by=['Season', 'DayNum']).reset_index(drop=True)
+    
+    # Create team statistics dictionary using Season_TeamID as key
     team_stats = {}
     
-    for season in games['Season'].unique():
-        season_games = games[games['Season'] == season]
-        for team_id in set(season_games['Team1'].unique()) | set(season_games['Team2'].unique()):
-            team_wins = len(season_games[season_games['WTeamID'] == team_id])
-            team_losses = len(season_games[season_games['LTeamID'] == team_id])
-            
-            # Basic statistics
-            win_rate = team_wins / (team_wins + team_losses) if (team_wins + team_losses) > 0 else 0.5
-            games_played = team_wins + team_losses
-            
-            # Offensive and defensive efficiency calculations
-            team_w_games = season_games[season_games['WTeamID'] == team_id]
-            team_l_games = season_games[season_games['LTeamID'] == team_id]
-            
-            points_scored = team_w_games['WScore'].sum() + team_l_games['LScore'].sum()
-            points_allowed = team_w_games['LScore'].sum() + team_l_games['WScore'].sum()
-            
-            avg_score = points_scored / games_played if games_played > 0 else 0
-            avg_allowed = points_allowed / games_played if games_played > 0 else 0
-            
+    # Calculate statistics for each team
+    for season in regular_games['Season'].unique():
+        season_games = regular_games[regular_games['Season'] == season]
+        
+        # Process winning team statistics
+        for _, row in season_games.iterrows():
+            team_id = row['WTeamID']
+            opponent_id = row['LTeamID']
             key = f"{season}_{team_id}"
-            team_stats[key] = {
-                'win_rate': win_rate,
-                'games_played': games_played,
-                'avg_score': avg_score,
-                'avg_allowed': avg_allowed,
-                'point_diff': avg_score - avg_allowed
-            }
+            
+            if key not in team_stats:
+                team_stats[key] = {
+                    'wins': 0, 'losses': 0, 'points_for': 0, 'points_against': 0
+                }
+            
+            team_stats[key]['wins'] += 1
+            team_stats[key]['points_for'] += row['WScore'] if 'WScore' in row else 0
+            team_stats[key]['points_against'] += row['LScore'] if 'LScore' in row else 0
+            
+            # Process losing team statistics
+            opp_key = f"{season}_{opponent_id}"
+            if opp_key not in team_stats:
+                team_stats[opp_key] = {
+                    'wins': 0, 'losses': 0, 'points_for': 0, 'points_against': 0
+                }
+            
+            team_stats[opp_key]['losses'] += 1
+            team_stats[opp_key]['points_for'] += row['LScore'] if 'LScore' in row else 0
+            team_stats[opp_key]['points_against'] += row['WScore'] if 'WScore' in row else 0
     
-    # Map computed statistics to games using IDTeam1 and IDTeam2 fields
+    # Calculate derived statistics
+    for key in team_stats:
+        stats = team_stats[key]
+        games_played = stats['wins'] + stats['losses']
+        if games_played > 0:
+            stats['win_rate'] = stats['wins'] / games_played
+            stats['avg_score'] = stats['points_for'] / games_played
+            stats['avg_allowed'] = stats['points_against'] / games_played
+            stats['point_diff'] = stats['avg_score'] - stats['avg_allowed']
+            stats['games_played'] = games_played
+        else:
+            stats['win_rate'] = 0.5
+            stats['avg_score'] = 60
+            stats['avg_allowed'] = 60
+            stats['point_diff'] = 0
+            stats['games_played'] = 0
+    
+    # Map the team statistics back to the original dataframe
     games['Team1_WinRate'] = games['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('win_rate', 0.5))
-    games['Team2_WinRate'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('win_rate', 0.5))
-    games['Team1_GamesPlayed'] = games['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('games_played', 0))
-    games['Team2_GamesPlayed'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('games_played', 0))
     games['Team1_AvgScore'] = games['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('avg_score', 60))
-    games['Team2_AvgScore'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('avg_score', 60))
     games['Team1_AvgAllowed'] = games['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('avg_allowed', 60))
-    games['Team2_AvgAllowed'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('avg_allowed', 60))
     games['Team1_PointDiff'] = games['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('point_diff', 0))
-    games['Team2_PointDiff'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('point_diff', 0))
+    games['Team1_GamesPlayed'] = games['IDTeam1'].map(lambda x: team_stats.get(x, {}).get('games_played', 0))
     
-    # Add difference features
+    games['Team2_WinRate'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('win_rate', 0.5))
+    games['Team2_AvgScore'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('avg_score', 60))
+    games['Team2_AvgAllowed'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('avg_allowed', 60))
+    games['Team2_PointDiff'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('point_diff', 0))
+    games['Team2_GamesPlayed'] = games['IDTeam2'].map(lambda x: team_stats.get(x, {}).get('games_played', 0))
+    
+    # Compute difference features
     games['WinRateDiff'] = games['Team1_WinRate'] - games['Team2_WinRate']
-    games['GamesPlayedDiff'] = games['Team1_GamesPlayed'] - games['Team2_GamesPlayed']
     games['AvgScoreDiff'] = games['Team1_AvgScore'] - games['Team2_AvgScore']
     games['AvgAllowedDiff'] = games['Team1_AvgAllowed'] - games['Team2_AvgAllowed']
     games['PointDiffDiff'] = games['Team1_PointDiff'] - games['Team2_PointDiff']
+    games['GamesPlayedDiff'] = games['Team1_GamesPlayed'] - games['Team2_GamesPlayed']
+    
+    print(f"团队统计特征计算完成，共处理了 {len(team_stats)} 个团队-赛季组合")
     
     return games, team_stats
 
 def add_head_to_head_features(games):
     """
-    For each game (training only), compute head-to-head win rate for Team1 vs Team2 using previous seasons data.
-    If no historical matchup, assign default value 0.5.
-
+    For each game (training only), compute head-to-head win rate for Team1 vs Team2 using previous seasons' data.
+    If no historical matchup, assign a default value of 0.5.
+    
     Args:
         games: DataFrame with game data
-
+        
     Returns:
         DataFrame with head-to-head features added
     """
@@ -142,14 +196,13 @@ def add_head_to_head_features(games):
 
 def add_recent_performance_features(games, window=5):
     """
-    For each game, calculate recent performance features for each team in the same season.
-    Uses 'DayNum' to determine game order. If 'DayNum' is missing, skip recent performance features.
+    For each game, calculate recent performance features for each team within the same season.
     Features include recent win rate and average score differential.
-
+    
     Args:
         games: DataFrame with game data
         window: Number of recent games to consider
-
+        
     Returns:
         DataFrame with recent performance features added
     """
@@ -198,38 +251,76 @@ def add_recent_performance_features(games, window=5):
 
 def aggregate_features(games):
     """
-    Aggregate game statistics for later use if available
-
+    Aggregate game statistics for later use, using only regular season data to avoid data leakage.
+    
     Args:
         games: DataFrame with game data
-
+        
     Returns:
         DataFrame with aggregated features
     """
+    print("聚合团队对阵统计特征（仅使用常规赛数据，避免数据泄露）...")
+    
+    # Check for GameType column
+    if 'GameType' not in games.columns:
+        print("警告: GameType列未找到，无法区分常规赛和锦标赛。假设所有数据都是常规赛。")
+        regular_games = games.copy()
+    else:
+        # Use only regular season games for aggregation
+        regular_games = games[games['GameType'] == 'Regular'].copy()
+        if regular_games.empty:
+            print("警告: 没有找到常规赛数据，使用所有数据进行聚合。")
+            regular_games = games.copy()
+        else:
+            print(f"使用 {len(regular_games)} 场常规赛比赛进行特征聚合（总共 {len(games)} 场比赛）")
+    
     available_cols = [col for col in ['NumOT', 'WFGM', 'WFGA', 'WFGM3', 'WFGA3', 'WFTM', 'WFTA', 'WOR',
                                      'WDR', 'WAst', 'WTO', 'WStl', 'WBlk', 'WPF', 'LFGM', 'LFGA',
                                      'LFGM3', 'LFGA3', 'LFTM', 'LFTA', 'LOR', 'LDR', 'LAst', 'LTO',
-                                     'LStl', 'LBlk', 'LPF'] if col in games.columns]
+                                     'LStl', 'LBlk', 'LPF'] if col in regular_games.columns]
     
     if not available_cols:
+        print("警告: 没有找到可用的统计列进行聚合。")
         return pd.DataFrame(columns=['IDTeams_c_score'])
     
+    # Group by Season and team pair. Construct a key 'SeasonIDTeams'
+    regular_games['SeasonIDTeams'] = regular_games.apply(lambda r: f"{r['Season']}_{r['IDTeams']}", axis=1)
+    
     agg_funcs = ['mean', 'median', 'std']
-    gb = games.groupby('IDTeams').agg({col: agg_funcs for col in available_cols}).reset_index()
-    gb.columns = [''.join(c) + '_c_score' if isinstance(c, tuple) else c for c in gb.columns]
+    gb = regular_games.groupby('SeasonIDTeams').agg({col: agg_funcs for col in available_cols}).reset_index()
+    
+    # Split SeasonIDTeams back into Season and IDTeams
+    gb[['Season', 'IDTeams']] = gb['SeasonIDTeams'].str.split('_', n=1, expand=True)
+    gb = gb.drop(columns=['SeasonIDTeams'])
+    
+    # Rename columns while keeping 'Season' and 'IDTeams' intact
+    new_columns = []
+    for col in gb.columns:
+        if isinstance(col, tuple):
+            col_name = ''.join(col)
+            if col_name in ['Season', 'IDTeams']:
+                new_columns.append(col_name)
+            else:
+                new_columns.append(col_name + '_c_score')
+        else:
+            new_columns.append(col)
+    gb.columns = new_columns
+    
+    print(f"聚合特征计算完成，共生成 {len(gb)} 个赛季-团队对组合的特征")
+    
     return gb
 
 def prepare_submission_features(submission_df, seed_dict, team_stats, extract_game_info_func):
     """
     Process the sample submission file to prepare features for prediction.
     Uses similar feature mapping as training data.
-
+    
     Args:
         submission_df: DataFrame with sample submission data
         seed_dict: Dictionary mapping Season_TeamID to seed value
         team_stats: Dictionary with team statistics
         extract_game_info_func: Function to extract game information
-
+        
     Returns:
         DataFrame with features for submission predictions
     """
@@ -269,11 +360,10 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     submission_df['AvgAllowedDiff'] = submission_df['Team1_AvgAllowed'] - submission_df['Team2_AvgAllowed']
     submission_df['PointDiffDiff'] = submission_df['Team1_PointDiff'] - submission_df['Team2_PointDiff']
     
-    # 固定将提交数据的 GameType 设为 "Tournament"
+    # Force the GameType for submission to "Tournament"
     submission_df['GameType'] = 'Tournament'
     
     return submission_df
-
 
 def merge_kenpom_features(games, kenpom_df):
     """
@@ -286,28 +376,21 @@ def merge_kenpom_features(games, kenpom_df):
     Returns:
         games: DataFrame with new KenPom feature columns added.
     """
-    # 首先检查必要的列是否存在
     if kenpom_df.empty:
         print("Warning: KenPom DataFrame is empty. No features will be added.")
         return games
     
-    # 检查KenPom数据中的列
     print(f"Available columns in KenPom data: {kenpom_df.columns.tolist()}")
     
-    # 检查是否有Season列，如果没有，尝试添加一个默认值
     if 'Season' not in kenpom_df.columns:
-        # 如果有Year列，重命名为Season
         if 'Year' in kenpom_df.columns:
             kenpom_df.rename(columns={'Year': 'Season'}, inplace=True)
         else:
-            # 如果没有季节信息，使用最近的赛季（2025）作为默认值
             print("Warning: No 'Season' column found in KenPom data. Using 2025 as default.")
             kenpom_df['Season'] = 2025
     
-    # 确保Season列是整数类型
     kenpom_df['Season'] = kenpom_df['Season'].astype(int)
     
-    # 检查是否有主要效率指标
     efficiency_column = None
     if 'AdjEM' in kenpom_df.columns:
         efficiency_column = 'AdjEM'
@@ -316,7 +399,6 @@ def merge_kenpom_features(games, kenpom_df):
     elif 'NetRtg' in kenpom_df.columns:
         efficiency_column = 'NetRtg'
     else:
-        # 尝试找到可能的效率列
         possible_columns = [col for col in kenpom_df.columns if 'Eff' in col or 'Rtg' in col or 'EM' in col]
         if possible_columns:
             efficiency_column = possible_columns[0]
@@ -325,10 +407,8 @@ def merge_kenpom_features(games, kenpom_df):
             print("Warning: No efficiency metric found in KenPom data. Returning games without KenPom features.")
             return games
     
-    # 确保效率指标是数值类型
     try:
         kenpom_df[efficiency_column] = pd.to_numeric(kenpom_df[efficiency_column], errors='coerce')
-        # 检查是否有NaN值并处理
         if kenpom_df[efficiency_column].isna().any():
             print(f"Warning: Found {kenpom_df[efficiency_column].isna().sum()} NaN values in {efficiency_column}. Filling with median.")
             kenpom_df[efficiency_column] = kenpom_df[efficiency_column].fillna(kenpom_df[efficiency_column].median())
@@ -347,12 +427,40 @@ def merge_kenpom_features(games, kenpom_df):
     kenpom_team2.rename(columns={'TeamID': 'Team2', efficiency_column: 'Team2_AdjEM'}, inplace=True)
     games = games.merge(kenpom_team2, how='left', on=['Season', 'Team2'])
     
-    # 确保合并后的列是数值类型
     games['Team1_AdjEM'] = pd.to_numeric(games['Team1_AdjEM'], errors='coerce').fillna(0)
     games['Team2_AdjEM'] = pd.to_numeric(games['Team2_AdjEM'], errors='coerce').fillna(0)
     
-    # Calculate difference feature
     games['AdjEM_Diff'] = games['Team1_AdjEM'] - games['Team2_AdjEM']
     print("KenPom features merged.")
     
+    return games
+
+def add_season_gametype_label(games):
+    """
+    Create a new feature that combines Season and GameType into descriptive labels.
+    For the current season (assumed to be Regular), label as 'current_year_regular'.
+    For previous seasons (Tournament), label as 'last_year_tournament', '2_years_ago_tournament', etc.
+    
+    Args:
+        games: DataFrame with game data, must include 'Season' and 'GameType'.
+    
+    Returns:
+        DataFrame with an added column 'Season_GameType_Label'.
+    """
+    current_season = games['Season'].max()
+    
+    def get_season_gametype_label(row):
+        season = row['Season']
+        # Lowercase the GameType for consistency
+        game_type = row['GameType'].lower()
+        if season == current_season:
+            return "current_year_regular"
+        else:
+            diff = current_season - season
+            if diff == 1:
+                return "last_year_tournament"
+            else:
+                return f"{diff}_years_ago_tournament"
+    
+    games['Season_GameType_Label'] = games.apply(get_season_gametype_label, axis=1)
     return games
