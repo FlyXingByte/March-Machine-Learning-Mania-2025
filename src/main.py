@@ -27,11 +27,18 @@ def parse_args():
                         help='Enable simulation mode to train on 2021-2023 data + 2024 regular season data and evaluate on 2024 tournament data')
     parser.add_argument('--use_extended_models', action='store_true',
                         help='Use extended model set with model variants for greater diversity')
+    # Add new arguments for Monte Carlo simulation
+    parser.add_argument('--use_monte_carlo', action='store_true',
+                        help='Enable Monte Carlo simulation to optimize predictions')
+    parser.add_argument('--num_simulations', type=int, default=10000,
+                        help='Number of Monte Carlo simulations to run')
+    parser.add_argument('--simulation_weight', type=float, default=0.3,
+                        help='Weight to give to simulation results (0-1)')
     return parser.parse_args()
 
-# Solo la parte de main.py que necesita modificación (función run_pipeline modificada)
-
-def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbose=1, stage=2, test_mode=False, simulation_mode=False, use_extended_models=False):
+def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbose=1, stage=2, test_mode=False, 
+                simulation_mode=False, use_extended_models=False, use_monte_carlo=False, num_simulations=10000, 
+                simulation_weight=0.3):
     """
     Run the entire March Mania prediction pipeline
 
@@ -44,6 +51,9 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         test_mode: If True, only use 10 games per year for quick testing
         simulation_mode: If True, train on 2021-2023 data + 2024 regular season data and evaluate on 2024 tournament data
         use_extended_models: If True, use extended model set with model variants for greater diversity
+        use_monte_carlo: If True, use Monte Carlo simulation to optimize predictions
+        num_simulations: Number of Monte Carlo simulations to run
+        simulation_weight: Weight to give to simulation results (0-1)
     """
     print(f"Running March Mania prediction pipeline from {start_year} onwards for Stage {stage}")
     if test_mode:
@@ -58,6 +68,10 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     if use_extended_models:
         print("EXTENDED MODELS ENABLED: Using a larger set of models with varied hyperparameters")
         print("This will significantly increase training time but may improve prediction accuracy")
+    
+    if use_monte_carlo:
+        print("MONTE CARLO SIMULATION ENABLED: Will optimize predictions using tournament simulation")
+        print(f"Number of simulations: {num_simulations}, Simulation weight: {simulation_weight}")
     
     # Step 1: Load data
     season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year, stage, test_mode)
@@ -239,10 +253,64 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     print("Starting training and prediction...")
     test_pred = models.stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=verbose, use_extended_models=use_extended_models)
     
-    # Step 12: Generate submission file
-    print("Generating submission file...")
+    # Step 12: Generate initial submission file (create a temporary version first if using Monte Carlo)
+    print("Generating initial submission file...")
     print(f"Test predictions shape: {test_pred.shape}")
-    final_submission = evaluation.generate_submission(submission_df, test_pred, output_file)
+    
+    if use_monte_carlo:
+        # Save initial predictions to a temporary file
+        initial_submission = evaluation.generate_submission(
+            submission_df, test_pred, output_file.replace('.csv', '_pre_monte_carlo.csv')
+        )
+    else:
+        # Generate the final submission directly if not using Monte Carlo
+        final_submission = evaluation.generate_submission(submission_df, test_pred, output_file)
+    
+    # Step 12.5: Monte Carlo simulation (if enabled)
+    if use_monte_carlo:
+        print("\n--- Running Monte Carlo Tournament Simulation ---")
+        import monte_carlo
+        
+        # Make sure initial_submission has the necessary columns
+        initial_submission = initial_submission.copy()
+        
+        # Run Monte Carlo simulation and optimize predictions
+        optimized_submission = monte_carlo.simulate_and_optimize(
+            initial_submission, 
+            seed_dict,
+            team_stats_cum,  # Pass team statistics for better probability estimation
+            num_simulations=num_simulations,
+            simulation_weight=simulation_weight
+        )
+        
+        # Generate final submission file with optimized predictions
+        print("Generating final submission file with Monte Carlo optimized predictions...")
+        final_submission = optimized_submission.copy()
+        final_submission.to_csv(output_file, index=False)
+        
+        # Print comparison of original vs. optimized predictions
+        print("\nComparing original vs. optimized predictions:")
+        original_mean = initial_submission['Pred'].mean()
+        optimized_mean = final_submission['Pred'].mean()
+        print(f"  Original mean: {original_mean:.4f}")
+        print(f"  Optimized mean: {optimized_mean:.4f}")
+        print(f"  Mean difference: {abs(optimized_mean - original_mean):.4f}")
+        
+        # Calculate and print the average absolute change in predictions
+        common_ids = set(initial_submission['ID']).intersection(final_submission['ID'])
+        changes = [abs(final_submission.loc[final_submission['ID'] == id, 'Pred'].iloc[0] - 
+                      initial_submission.loc[initial_submission['ID'] == id, 'Pred'].iloc[0])
+                  for id in common_ids]
+        avg_change = sum(changes) / len(changes) if changes else 0
+        print(f"  Average absolute change in predictions: {avg_change:.4f}")
+        
+        # Count significantly changed predictions (e.g., >0.05)
+        sig_changes = sum(1 for c in changes if c > 0.05)
+        print(f"  Predictions with significant changes (>0.05): {sig_changes} ({sig_changes/len(changes)*100:.1f}%)")
+    
+    # Print final submission stats
+    if use_monte_carlo:
+        evaluation.print_submission_stats(final_submission)
     
     # Step 13: Evaluate on 2024 tournament data if in simulation mode
     if simulation_mode and eval_data is not None and not eval_data.empty:
@@ -261,6 +329,10 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     if test_mode:
         print("Remember: This was run in TEST MODE with a reduced dataset.")
         print("For actual competition predictions, run without the --test_mode flag.")
+    if use_monte_carlo:
+        print("Monte Carlo simulation was used to optimize predictions.")
+        print(f"Number of simulations: {num_simulations}")
+        print(f"Simulation weight: {simulation_weight}")
     
     return final_submission
 
@@ -407,5 +479,10 @@ if __name__ == "__main__":
         stage=args.stage,
         test_mode=args.test_mode,
         simulation_mode=args.simulation_mode,
-        use_extended_models=args.use_extended_models
+        use_extended_models=args.use_extended_models,
+        use_monte_carlo=args.use_monte_carlo,
+        num_simulations=args.num_simulations,
+        simulation_weight=args.simulation_weight
     )
+    
+# python main.py --use_monte_carlo --num_simulations=10000 --simulation_weight=0.3
