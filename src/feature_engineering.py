@@ -558,6 +558,11 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     """
     print("为提交文件准备特征数据...")
     
+    # Create a deep copy and add an original index column to track row identity
+    submission_df = submission_df.copy()
+    submission_df['original_index'] = np.arange(len(submission_df))
+    original_ids = submission_df['ID'].copy()  # Save original IDs
+    
     game_info = submission_df['ID'].apply(extract_game_info_func)
     submission_df['Season'] = [info[0] for info in game_info]
     submission_df['Team1'] = [info[1] for info in game_info]
@@ -647,6 +652,9 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     submission_df['Team1_Momentum'] = 0.0
     submission_df['Team2_Momentum'] = 0.0
     submission_df['MomentumDiff'] = 0.0
+    
+    # Store original IDs for final alignment
+    submission_df['original_ID'] = original_ids
     
     print("提交文件特征准备完成")
     return submission_df

@@ -29,6 +29,8 @@ def parse_args():
                         help='Use extended model set with model variants for greater diversity')
     return parser.parse_args()
 
+# Solo la parte de main.py que necesita modificación (función run_pipeline modificada)
+
 def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbose=1, stage=2, test_mode=False, simulation_mode=False, use_extended_models=False):
     """
     Run the entire March Mania prediction pipeline
@@ -126,6 +128,15 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         submission.copy(), seed_dict, team_stats_cum, data_loader.extract_game_info
     )
     
+    # Verify submission data integrity before further processing
+    if 'original_index' in submission_df.columns:
+        expected_rows = len(submission_df['original_index'].unique())
+        actual_rows = len(submission_df)
+        if expected_rows != actual_rows:
+            print(f"WARNING: Submission data integrity issue detected!")
+            print(f"Expected {expected_rows} unique rows, but found {actual_rows} total rows")
+            print("This suggests duplicated or missing rows which will cause misalignment")
+    
     # Step 9: Merge aggregated features if available
     if not agg_features.empty and 'IDTeams_c_score' in agg_features.columns:
         print("合并聚合特征（按赛季匹配，避免数据泄露）...")
@@ -162,7 +173,11 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
             
             submission_with_agg.append(season_submission)
         
-        submission_df = pd.concat(submission_with_agg, ignore_index=True)
+        # Sort by original index to maintain the original order after concatenation
+        submission_df = pd.concat(submission_with_agg, ignore_index=False)
+        if 'original_index' in submission_df.columns:
+            submission_df = submission_df.sort_values('original_index').reset_index(drop=True)
+            print(f"排序提交数据到原始顺序，共 {len(submission_df)} 行")
         
         # 对评估数据也按赛季合并聚合特征（如果在模拟模式下）
         if simulation_mode and eval_data is not None:
@@ -197,6 +212,17 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     except Exception as e:
         print(f"Error merging KenPom features to submission: {e}")
         print("Continuing without KenPom features in submission...")
+    
+    # Verify submission data integrity after all feature engineering
+    if 'original_index' in submission_df.columns:
+        expected_rows = len(submission_df['original_index'].unique())
+        actual_rows = len(submission_df)
+        if expected_rows != actual_rows:
+            print(f"WARNING: Submission data integrity issue detected after feature engineering!")
+            print(f"Expected {expected_rows} unique rows, but found {actual_rows} total rows")
+            print("Attempting to fix by removing duplicates and sorting by original index...")
+            submission_df = submission_df.drop_duplicates(subset=['original_index']).sort_values('original_index').reset_index(drop=True)
+            print(f"After fixing: {len(submission_df)} rows")
     
     # Step 10: Prepare final datasets
     X_train, y_train, X_test, features = evaluation.prepare_dataset(games, submission_df)

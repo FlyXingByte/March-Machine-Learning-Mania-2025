@@ -14,8 +14,34 @@ def generate_submission(submission_df, test_pred, output_file='submission.csv'):
     Returns:
         DataFrame with ID and predictions
     """
-    # Fix submission format if needed
-    final_submission = fix_submission_format(submission_df, test_pred)
+    # Check if we have tracking columns
+    has_tracking = 'original_index' in submission_df.columns and 'original_ID' in submission_df.columns
+    
+    if has_tracking:
+        # Create a new dataframe with original IDs and predictions
+        # Sort by original index to ensure correct order
+        if len(test_pred) != len(submission_df):
+            print(f"Warning: Prediction count ({len(test_pred)}) doesn't match submission dataframe size ({len(submission_df)})")
+            
+        # Create a temporary dataframe with index and predictions
+        temp_df = pd.DataFrame({
+            'original_index': submission_df['original_index'],
+            'Pred': test_pred
+        })
+        # Sort by original index
+        temp_df = temp_df.sort_values('original_index')
+        
+        # Create final submission with sorted predictions
+        final_submission = pd.DataFrame({
+            'ID': submission_df.sort_values('original_index')['original_ID'].values,
+            'Pred': temp_df['Pred'].values
+        })
+        
+        print(f"Used direct alignment with tracking columns to create submission with {len(final_submission)} rows")
+    else:
+        # Fall back to the original fix method if tracking columns aren't available
+        print("Warning: Tracking columns not found. Using fallback alignment method.")
+        final_submission = fix_submission_format(submission_df, test_pred)
     
     # Save to file
     final_submission.to_csv(output_file, index=False)
@@ -126,7 +152,7 @@ def prepare_dataset(games, submission_df, extract_agg_features=True):
     Returns:
         Tuple of (X_train, y_train, X_test, features list)
     """
-    # Exclude non-model input columns and raw statistics
+    # Exclude non-model input columns and raw statistics, but keep tracking columns
     exclude_cols = ['ID', 'DayNum', 'ST', 'Team1', 'Team2', 'IDTeams',
                     'IDTeam1', 'IDTeam2', 'WTeamID', 'WScore', 'LTeamID',
                     'LScore', 'NumOT', 'WinA', 'ScoreDiff', 'ScoreDiffNorm',
@@ -135,11 +161,19 @@ def prepare_dataset(games, submission_df, extract_agg_features=True):
                     'LFGM', 'LFGA', 'LFGM3', 'LFGA3', 'LFTM', 'LFTA', 'LOR',
                     'LDR', 'LAst', 'LTO', 'LStl', 'LBlk', 'LPF', 'IDTeams_c_score',
                     'Pred']  # Removed 'Season' from exclude_cols
+                             # DO NOT exclude 'original_index' and 'original_ID'
     
     features = [c for c in games.columns if c not in exclude_cols and c in submission_df.columns] if submission_df is not None else [c for c in games.columns if c not in exclude_cols]
     
     if submission_df is not None:
         print(f"Using {len(features)} features for training, sample features: {features[:5]}")
+    
+    # Check for tracking columns
+    tracking_cols = []
+    if submission_df is not None:
+        tracking_cols = [col for col in ['original_index', 'original_ID'] if col in submission_df.columns]
+        if tracking_cols:
+            print(f"Found tracking columns: {tracking_cols}")
     
     # Ensure Season column is available for model training if it exists in games
     if 'Season' in games.columns and 'Season' not in features:
@@ -148,17 +182,31 @@ def prepare_dataset(games, submission_df, extract_agg_features=True):
         
         # If submission data is provided
         if submission_df is not None:
-            # If submission data doesn't have Season, add a default season (e.g., 2025)
-            if 'Season' not in submission_df.columns:
-                X_sub = submission_df[features].fillna(0)
-                X_sub['Season'] = 2025  # Use the current competition year
+            # Include tracking columns if they exist
+            if tracking_cols:
+                # If submission data doesn't have Season, add a default season (e.g., 2025)
+                if 'Season' not in submission_df.columns:
+                    X_sub = submission_df[features + tracking_cols].fillna(0)
+                    X_sub['Season'] = 2025  # Use the current competition year
+                else:
+                    X_sub = submission_df[features + ['Season'] + tracking_cols].fillna(0)
             else:
-                X_sub = submission_df[features + ['Season']].fillna(0)
+                # No tracking columns
+                if 'Season' not in submission_df.columns:
+                    X_sub = submission_df[features].fillna(0)
+                    X_sub['Season'] = 2025  # Use the current competition year
+                else:
+                    X_sub = submission_df[features + ['Season']].fillna(0)
         else:
             X_sub = None
     else:
-        X_train = games[features].fillna(0)
-        X_sub = submission_df[features].fillna(0) if submission_df is not None else None
+        # No Season column
+        if tracking_cols and submission_df is not None:
+            X_train = games[features].fillna(0)
+            X_sub = submission_df[features + tracking_cols].fillna(0) if submission_df is not None else None
+        else:
+            X_train = games[features].fillna(0)
+            X_sub = submission_df[features].fillna(0) if submission_df is not None else None
     
     y_train = games['WinA']
     
@@ -257,4 +305,4 @@ def save_evaluation_results(metrics, output_file):
     # Save to CSV
     metrics_df.to_csv(output_file, index=False)
     
-    print(f"Evaluation metrics saved to {output_file}") 
+    print(f"Evaluation metrics saved to {output_file}")
