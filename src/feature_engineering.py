@@ -1659,8 +1659,14 @@ def enhance_kenpom_features(games, kenpom_df):
 
 def enhance_key_stat_differentials(games):
     """
-    Enhance statistical differentials with additional important metrics like free throw rate
-    and ensure we have all the key champion indicators.
+    Enhance statistical differentials with additional important metrics:
+    - Rebounding rate differentials (offensive, total)
+    - Turnover rate differentials
+    - Effective field goal percentage (eFG%) differentials
+    - True shooting percentage (TS%) differentials
+    - Free throw rate and percentage differentials
+    
+    These metrics are critical champion indicators based on winning team patterns.
     
     Args:
         games: DataFrame with game data
@@ -1668,7 +1674,7 @@ def enhance_key_stat_differentials(games):
     Returns:
         DataFrame with additional key statistical differences
     """
-    print("增强关键统计差异特征，添加罚球率等冠军指标...")
+    print("增强关键统计差异特征，添加篮板率、失误率、有效命中率等冠军指标...")
     
     # Make a copy to avoid modifying the original DataFrame
     result = games.copy()
@@ -1677,59 +1683,258 @@ def enhance_key_stat_differentials(games):
     required_shooting_cols = ['WFGM', 'WFGA', 'WFGM3', 'WFGA3', 'WFTM', 'WFTA', 
                              'LFGM', 'LFGA', 'LFGM3', 'LFGA3', 'LFTM', 'LFTA']
     
+    required_rebounding_cols = ['WOR', 'WDR', 'LOR', 'LDR']
+    
+    required_turnover_cols = ['WTO', 'LTO']
+    
     # Check if detailed statistics are available
     has_shooting_stats = all(col in games.columns for col in required_shooting_cols)
+    has_rebounding_stats = all(col in games.columns for col in required_rebounding_cols)
+    has_turnover_stats = all(col in games.columns for col in required_turnover_cols)
     
-    if not has_shooting_stats:
-        print("  No detailed shooting statistics found. Setting default values.")
-        # Set default values for the new indicators
-        result['Team1_FTRate'] = 0.25  # Typical FT rate default
-        result['Team2_FTRate'] = 0.25
-        result['FTRateDiff'] = 0.0
+    if not (has_shooting_stats and has_rebounding_stats and has_turnover_stats):
+        print("  部分统计数据未找到，设置默认值...")
+        
+        # Default values for critical metrics
+        if 'FTRateDiff' not in result.columns:
+            result['FTRateDiff'] = 0.0
+        if 'FTPctDiff' not in result.columns:
+            result['FTPctDiff'] = 0.0
+        if 'OffRebRateDiff' not in result.columns:
+            result['OffRebRateDiff'] = 0.0
+        if 'TotalRebRateDiff' not in result.columns:
+            result['TotalRebRateDiff'] = 0.0
+        if 'TurnoverRateDiff' not in result.columns:
+            result['TurnoverRateDiff'] = 0.0
+        if 'EFGPctDiff' not in result.columns:
+            result['EFGPctDiff'] = 0.0
+        if 'TSPctDiff' not in result.columns:
+            result['TSPctDiff'] = 0.0
+        
+        # Create a composite champion indicator with default values
+        if 'ChampionComposite' not in result.columns:
+            result['ChampionComposite'] = 0.0
+            
         return result
     
-    # Initialize team shooting stats dictionary if we need to build it
-    team_shooting_stats = {}
+    print("  计算详细的高级统计指标差异...")
     
-    # Process historical game data to calculate team FT rate stats
+    # Initialize team stats dictionaries
+    team_shooting_stats = {}
+    team_rebounding_stats = {}
+    team_turnover_stats = {}
+    
+    # Process historical game data to calculate advanced team stats
     for _, row in games.iterrows():
         season = row['Season']
         
         # Get teams
-        wteam_id = row['WTeamID']
-        lteam_id = row['LTeamID']
+        wteam_id = row['WTeamID'] if 'WTeamID' in row else row['Team1']
+        lteam_id = row['LTeamID'] if 'LTeamID' in row else row['Team2']
         
-        # Process winning team stats
-        if f"{season}_{wteam_id}" not in team_shooting_stats:
-            team_shooting_stats[f"{season}_{wteam_id}"] = {
-                'fta': 0, 'fga': 0, 'games': 0
-            }
+        # Process winning team shooting stats
+        if has_shooting_stats:
+            if f"{season}_{wteam_id}" not in team_shooting_stats:
+                team_shooting_stats[f"{season}_{wteam_id}"] = {
+                    'fgm': 0, 'fga': 0, 'fg3m': 0, 'fg3a': 0, 
+                    'ftm': 0, 'fta': 0, 'pts': 0, 'games': 0
+                }
+            
+            team_shooting_stats[f"{season}_{wteam_id}"]['fgm'] += row['WFGM']
+            team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
+            team_shooting_stats[f"{season}_{wteam_id}"]['fg3m'] += row['WFGM3']
+            team_shooting_stats[f"{season}_{wteam_id}"]['fg3a'] += row['WFGA3']
+            team_shooting_stats[f"{season}_{wteam_id}"]['ftm'] += row['WFTM']
+            team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
+            team_shooting_stats[f"{season}_{wteam_id}"]['pts'] += (2 * (row['WFGM'] - row['WFGM3']) + 3 * row['WFGM3'] + row['WFTM'])
+            team_shooting_stats[f"{season}_{wteam_id}"]['games'] += 1
+            
+            # Process losing team shooting stats
+            if f"{season}_{lteam_id}" not in team_shooting_stats:
+                team_shooting_stats[f"{season}_{lteam_id}"] = {
+                    'fgm': 0, 'fga': 0, 'fg3m': 0, 'fg3a': 0, 
+                    'ftm': 0, 'fta': 0, 'pts': 0, 'games': 0
+                }
+            
+            team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['LFGM']
+            team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
+            team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['LFGM3']
+            team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['LFGA3']
+            team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['LFTM']
+            team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
+            team_shooting_stats[f"{season}_{lteam_id}"]['pts'] += (2 * (row['LFGM'] - row['LFGM3']) + 3 * row['LFGM3'] + row['LFTM'])
+            team_shooting_stats[f"{season}_{lteam_id}"]['games'] += 1
         
-        team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
-        team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
-        team_shooting_stats[f"{season}_{wteam_id}"]['games'] += 1
+        # Process rebounding stats
+        if has_rebounding_stats:
+            # Winning team rebounding
+            if f"{season}_{wteam_id}" not in team_rebounding_stats:
+                team_rebounding_stats[f"{season}_{wteam_id}"] = {
+                    'oreb': 0, 'dreb': 0, 'total_opp_dreb': 0, 'total_opp_oreb': 0, 'games': 0
+                }
+            
+            team_rebounding_stats[f"{season}_{wteam_id}"]['oreb'] += row['WOR']
+            team_rebounding_stats[f"{season}_{wteam_id}"]['dreb'] += row['WDR']
+            team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_dreb'] += row['LDR']
+            team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_oreb'] += row['LOR']
+            team_rebounding_stats[f"{season}_{wteam_id}"]['games'] += 1
+            
+            # Losing team rebounding
+            if f"{season}_{lteam_id}" not in team_rebounding_stats:
+                team_rebounding_stats[f"{season}_{lteam_id}"] = {
+                    'oreb': 0, 'dreb': 0, 'total_opp_dreb': 0, 'total_opp_oreb': 0, 'games': 0
+                }
+            
+            team_rebounding_stats[f"{season}_{lteam_id}"]['oreb'] += row['LOR']
+            team_rebounding_stats[f"{season}_{lteam_id}"]['dreb'] += row['LDR']
+            team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_dreb'] += row['WDR']
+            team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_oreb'] += row['WOR']
+            team_rebounding_stats[f"{season}_{lteam_id}"]['games'] += 1
         
-        # Process losing team stats
-        if f"{season}_{lteam_id}" not in team_shooting_stats:
-            team_shooting_stats[f"{season}_{lteam_id}"] = {
-                'fta': 0, 'fga': 0, 'games': 0
-            }
-        
-        team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
-        team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
-        team_shooting_stats[f"{season}_{lteam_id}"]['games'] += 1
+        # Process turnover stats
+        if has_turnover_stats:
+            # Winning team turnovers
+            if f"{season}_{wteam_id}" not in team_turnover_stats:
+                team_turnover_stats[f"{season}_{wteam_id}"] = {
+                    'to': 0, 'fga': 0, 'fta': 0, 'games': 0
+                }
+            
+            team_turnover_stats[f"{season}_{wteam_id}"]['to'] += row['WTO']
+            if 'WFGA' in row:
+                team_turnover_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
+            if 'WFTA' in row:
+                team_turnover_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
+            team_turnover_stats[f"{season}_{wteam_id}"]['games'] += 1
+            
+            # Losing team turnovers
+            if f"{season}_{lteam_id}" not in team_turnover_stats:
+                team_turnover_stats[f"{season}_{lteam_id}"] = {
+                    'to': 0, 'fga': 0, 'fta': 0, 'games': 0
+                }
+            
+            team_turnover_stats[f"{season}_{lteam_id}"]['to'] += row['LTO']
+            if 'LFGA' in row:
+                team_turnover_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
+            if 'LFTA' in row:
+                team_turnover_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
+            team_turnover_stats[f"{season}_{lteam_id}"]['games'] += 1
     
-    # Calculate free throw rate for each team (FTA/FGA)
+    # Calculate advanced shooting metrics for each team
     for team_key in team_shooting_stats:
         stats = team_shooting_stats[team_key]
+        
+        # Free throw rate (FTA/FGA)
         stats['ft_rate'] = stats['fta'] / stats['fga'] if stats['fga'] > 0 else 0.25
+        
+        # Free throw percentage
+        stats['ft_pct'] = stats['ftm'] / stats['fta'] if stats['fta'] > 0 else 0.7
+        
+        # Effective field goal percentage: (FGM + 0.5 * 3PM) / FGA
+        stats['efg_pct'] = (stats['fgm'] + 0.5 * stats['fg3m']) / stats['fga'] if stats['fga'] > 0 else 0.45
+        
+        # True shooting percentage: PTS / (2 * (FGA + 0.44 * FTA))
+        stats['ts_pct'] = stats['pts'] / (2 * (stats['fga'] + 0.44 * stats['fta'])) if (stats['fga'] + 0.44 * stats['fta']) > 0 else 0.5
     
-    # Add free throw rate features
-    result['Team1_FTRate'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('ft_rate', 0.25))
-    result['Team2_FTRate'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('ft_rate', 0.25))
+    # Calculate rebounding rates for each team
+    for team_key in team_rebounding_stats:
+        stats = team_rebounding_stats[team_key]
+        
+        # Offensive rebounding rate: ORB / (ORB + Opp DRB)
+        total_oreb_opportunities = stats['oreb'] + stats['total_opp_dreb']
+        stats['oreb_rate'] = stats['oreb'] / total_oreb_opportunities if total_oreb_opportunities > 0 else 0.3
+        
+        # Defensive rebounding rate: DRB / (DRB + Opp ORB)
+        total_dreb_opportunities = stats['dreb'] + stats['total_opp_oreb']
+        stats['dreb_rate'] = stats['dreb'] / total_dreb_opportunities if total_dreb_opportunities > 0 else 0.7
+        
+        # Total rebounding rate: (ORB + DRB) / (ORB + DRB + Opp ORB + Opp DRB)
+        total_reb = stats['oreb'] + stats['dreb']
+        total_opp_reb = stats['total_opp_oreb'] + stats['total_opp_dreb']
+        stats['total_reb_rate'] = total_reb / (total_reb + total_opp_reb) if (total_reb + total_opp_reb) > 0 else 0.5
     
-    # Calculate free throw rate differential
-    result['FTRateDiff'] = result['Team1_FTRate'] - result['Team2_FTRate']
+    # Calculate turnover rates for each team
+    for team_key in team_turnover_stats:
+        stats = team_turnover_stats[team_key]
+        
+        # Estimate possessions: FGA + 0.44*FTA + TO - ORB
+        # Since we don't directly track possessions, this is an approximation
+        # Using FGA and FTA as a proxy for possessions
+        possessions = stats['fga'] + 0.44 * stats['fta'] if stats['fga'] > 0 else 100 * stats['games']
+        
+        # Turnover rate: TO / Possessions
+        stats['to_rate'] = stats['to'] / possessions if possessions > 0 else 0.15
+    
+    # Map team ID keys
+    team1_key = 'IDTeam1' if 'IDTeam1' in result.columns else None
+    team2_key = 'IDTeam2' if 'IDTeam2' in result.columns else None
+    
+    if team1_key is None or team2_key is None:
+        # Try to construct the keys from Season and Team columns
+        if 'Season' in result.columns and 'Team1' in result.columns and 'Team2' in result.columns:
+            result['IDTeam1'] = result.apply(lambda r: f"{r['Season']}_{r['Team1']}", axis=1)
+            result['IDTeam2'] = result.apply(lambda r: f"{r['Season']}_{r['Team2']}", axis=1)
+            team1_key = 'IDTeam1'
+            team2_key = 'IDTeam2'
+        else:
+            print("  警告: 无法构造队伍ID键，使用默认值")
+            # Set default values
+            result['FTRateDiff'] = 0.0
+            result['FTPctDiff'] = 0.0
+            result['EFGPctDiff'] = 0.0
+            result['TSPctDiff'] = 0.0
+            result['OffRebRateDiff'] = 0.0
+            result['DefRebRateDiff'] = 0.0
+            result['TotalRebRateDiff'] = 0.0
+            result['TurnoverRateDiff'] = 0.0
+            return result
+    
+    # Add shooting features
+    if team_shooting_stats:
+        # Team1 shooting features
+        result['Team1_FTRate'] = result[team1_key].map(lambda x: team_shooting_stats.get(x, {}).get('ft_rate', 0.25))
+        result['Team1_FTPct'] = result[team1_key].map(lambda x: team_shooting_stats.get(x, {}).get('ft_pct', 0.7))
+        result['Team1_EFGPct'] = result[team1_key].map(lambda x: team_shooting_stats.get(x, {}).get('efg_pct', 0.45))
+        result['Team1_TSPct'] = result[team1_key].map(lambda x: team_shooting_stats.get(x, {}).get('ts_pct', 0.5))
+        
+        # Team2 shooting features
+        result['Team2_FTRate'] = result[team2_key].map(lambda x: team_shooting_stats.get(x, {}).get('ft_rate', 0.25))
+        result['Team2_FTPct'] = result[team2_key].map(lambda x: team_shooting_stats.get(x, {}).get('ft_pct', 0.7))
+        result['Team2_EFGPct'] = result[team2_key].map(lambda x: team_shooting_stats.get(x, {}).get('efg_pct', 0.45))
+        result['Team2_TSPct'] = result[team2_key].map(lambda x: team_shooting_stats.get(x, {}).get('ts_pct', 0.5))
+        
+        # Calculate shooting differentials
+        result['FTRateDiff'] = result['Team1_FTRate'] - result['Team2_FTRate']
+        result['FTPctDiff'] = result['Team1_FTPct'] - result['Team2_FTPct']
+        result['EFGPctDiff'] = result['Team1_EFGPct'] - result['Team2_EFGPct']
+        result['TSPctDiff'] = result['Team1_TSPct'] - result['Team2_TSPct']
+    
+    # Add rebounding features
+    if team_rebounding_stats:
+        # Team1 rebounding features
+        result['Team1_OffRebRate'] = result[team1_key].map(lambda x: team_rebounding_stats.get(x, {}).get('oreb_rate', 0.3))
+        result['Team1_DefRebRate'] = result[team1_key].map(lambda x: team_rebounding_stats.get(x, {}).get('dreb_rate', 0.7))
+        result['Team1_TotalRebRate'] = result[team1_key].map(lambda x: team_rebounding_stats.get(x, {}).get('total_reb_rate', 0.5))
+        
+        # Team2 rebounding features
+        result['Team2_OffRebRate'] = result[team2_key].map(lambda x: team_rebounding_stats.get(x, {}).get('oreb_rate', 0.3))
+        result['Team2_DefRebRate'] = result[team2_key].map(lambda x: team_rebounding_stats.get(x, {}).get('dreb_rate', 0.7))
+        result['Team2_TotalRebRate'] = result[team2_key].map(lambda x: team_rebounding_stats.get(x, {}).get('total_reb_rate', 0.5))
+        
+        # Calculate rebounding differentials
+        result['OffRebRateDiff'] = result['Team1_OffRebRate'] - result['Team2_OffRebRate']
+        result['DefRebRateDiff'] = result['Team1_DefRebRate'] - result['Team2_DefRebRate']
+        result['TotalRebRateDiff'] = result['Team1_TotalRebRate'] - result['Team2_TotalRebRate']
+    
+    # Add turnover features
+    if team_turnover_stats:
+        # Team1 turnover features
+        result['Team1_TORate'] = result[team1_key].map(lambda x: team_turnover_stats.get(x, {}).get('to_rate', 0.15))
+        
+        # Team2 turnover features
+        result['Team2_TORate'] = result[team2_key].map(lambda x: team_turnover_stats.get(x, {}).get('to_rate', 0.15))
+        
+        # Calculate turnover differential
+        result['TurnoverRateDiff'] = result['Team1_TORate'] - result['Team2_TORate']
     
     # Ensure we have all the critical champion indicators
     critical_indicators = [
@@ -1737,7 +1942,9 @@ def enhance_key_stat_differentials(games):
         'TurnoverRateDiff', # Turnover rate difference
         'OffRebRateDiff',   # Offensive rebounding rate difference
         'FTRateDiff',       # Free throw rate difference 
-        'FTPctDiff'         # Free throw percentage difference
+        'FTPctDiff',        # Free throw percentage difference
+        'TSPctDiff',        # True shooting percentage difference
+        'TotalRebRateDiff'  # Total rebounding rate difference
     ]
     
     # Check which indicators we're missing and initialize them if needed
@@ -1748,12 +1955,29 @@ def enhance_key_stat_differentials(games):
     
     # Create a composite champion indicator based on these factors
     # This combines the 'Four Factors' indicators with some weighting
+    # Weights based on research that shows eFG% is most important, followed by turnover rate, etc.
     result['ChampionComposite'] = (
-        0.4 * result['EFGPctDiff'] +      # 40% weight to shooting
-        0.25 * -result['TurnoverRateDiff'] +  # 25% weight to not turning it over (negative because lower is better)
-        0.20 * result['OffRebRateDiff'] +  # 20% weight to offensive rebounding
-        0.15 * result['FTRateDiff']        # 15% weight to getting to the line
+        0.4 * result['EFGPctDiff'] +           # 40% weight to shooting efficiency
+        0.25 * -result['TurnoverRateDiff'] +   # 25% weight to not turning it over (negative because lower is better)
+        0.20 * result['OffRebRateDiff'] +      # 20% weight to offensive rebounding
+        0.15 * result['FTRateDiff']            # 15% weight to getting to the line
     )
     
-    print("关键冠军指标增强完成")
+    # Create an alternative composite that includes TS% and total rebounding
+    result['ChampionCompositeV2'] = (
+        0.35 * result['TSPctDiff'] +           # 35% weight to true shooting
+        0.25 * -result['TurnoverRateDiff'] +   # 25% weight to turnovers
+        0.20 * result['TotalRebRateDiff'] +    # 20% weight to total rebounding
+        0.10 * result['OffRebRateDiff'] +      # 10% additional weight to offensive boards
+        0.10 * result['FTRateDiff']            # 10% weight to free throw rate
+    )
+    
+    print("关键冠军指标增强完成，添加了以下新指标:")
+    print("  - 有效投篮命中率差异 (EFGPctDiff)")
+    print("  - 真实命中率差异 (TSPctDiff)")
+    print("  - 罚球率及命中率差异 (FTRateDiff, FTPctDiff)")
+    print("  - 进攻篮板率、防守篮板率及总篮板率差异")
+    print("  - 失误率差异 (TurnoverRateDiff)")
+    print("  - 冠军综合指标 (ChampionComposite, ChampionCompositeV2)")
+    
     return result
