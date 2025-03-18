@@ -96,6 +96,12 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     games = feature_engineering.add_head_to_head_features(games)
     games = feature_engineering.add_recent_performance_features(games, window=5)
     
+    # Step 6.5: Add new features: Elo ratings, Strength of Schedule, and key statistical differentials
+    print("Adding advanced predictive features...")
+    games = feature_engineering.add_elo_ratings(games, k_factor=20, initial_elo=1500, reset_each_season=True)
+    games = feature_engineering.add_strength_of_schedule(games, team_stats_cum)
+    games = feature_engineering.add_key_stat_differentials(games)
+    
     # --- Merge KenPom features into training data ---
     try:
         if not kenpom_df.empty:
@@ -150,6 +156,14 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
             print(f"WARNING: Submission data integrity issue detected!")
             print(f"Expected {expected_rows} unique rows, but found {actual_rows} total rows")
             print("This suggests duplicated or missing rows which will cause misalignment")
+    
+    # Apply the same new features to submission data
+    print("Adding advanced predictive features to submission data...")
+    submission_df = feature_engineering.add_elo_ratings(submission_df, k_factor=20, initial_elo=1500, reset_each_season=True)
+    submission_df = feature_engineering.add_strength_of_schedule(submission_df, team_stats_cum)
+    # Note: Key stat differentials require game details which may not be available for future games
+    # But if they are in the submission data, they will be used
+    submission_df = feature_engineering.add_key_stat_differentials(submission_df)
     
     # Step 9: Merge aggregated features if available
     if not agg_features.empty and 'IDTeams_c_score' in agg_features.columns:
@@ -226,6 +240,13 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     except Exception as e:
         print(f"Error merging KenPom features to submission: {e}")
         print("Continuing without KenPom features in submission...")
+    
+    # Apply new features to evaluation data if in simulation mode
+    if simulation_mode and eval_data is not None and not eval_data.empty:
+        print("Adding advanced predictive features to evaluation data...")
+        eval_data = feature_engineering.add_elo_ratings(eval_data, k_factor=20, initial_elo=1500, reset_each_season=True)
+        eval_data = feature_engineering.add_strength_of_schedule(eval_data, team_stats_cum)
+        eval_data = feature_engineering.add_key_stat_differentials(eval_data)
     
     # Verify submission data integrity after all feature engineering
     if 'original_index' in submission_df.columns:
