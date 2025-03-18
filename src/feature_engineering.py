@@ -61,7 +61,7 @@ def add_team_features(games, current_season=None, num_prev_tournaments=3):
     Returns:
         Tuple: (DataFrame with added team features, team_stats_cum dictionary)
     """
-    print("计算团队统计特征（仅使用常规赛数据，避免数据泄露）...")
+    print("Calculating team statistics features (regular season data only, to avoid data leakage)...")
     if current_season is None:
         current_season = games['Season'].max()
     
@@ -89,14 +89,14 @@ def add_team_features(games, current_season=None, num_prev_tournaments=3):
     games['Team2_FTPct'] = 0.7
     
     if 'GameType' not in games.columns:
-        print("GameType列未找到，无法区分常规赛和锦标赛。添加默认GameType列...")
-        games['GameType'] = 'Regular'  # 默认为常规赛
+        print("GameType column not found, cannot distinguish between regular season and tournament. Adding default GameType column...")
+        games['GameType'] = 'Regular'  # Default to regular season
     
     # Create a copy with only regular season data
     regular_games = games[games['GameType'] == 'Regular'].copy()
     
     if regular_games.empty:
-        print("没有找到常规赛数据，使用所有数据计算团队统计信息...")
+        print("No regular season data found, using all data for team statistics...")
         regular_games = games.copy()
     
     # Sort by Season and DayNum to ensure correct order
@@ -237,14 +237,13 @@ def add_team_features(games, current_season=None, num_prev_tournaments=3):
     games['3PPctDiff'] = games['Team1_3PPct'] - games['Team2_3PPct']
     games['FTPctDiff'] = games['Team1_FTPct'] - games['Team2_FTPct']
     
-    print(f"团队统计特征计算完成，共处理了 {len(team_stats)} 个团队-赛季组合")
+    print(f"Team statistics features calculation complete, processed {len(team_stats)} team-season combinations")
     
     return games, team_stats
 
 def add_head_to_head_features(games):
     """
-    For each game, compute head-to-head statistics for Team1 vs Team2 using previous seasons' data.
-    If no historical matchup, assign default values.
+    Add head-to-head features to the games DataFrame
     
     Args:
         games: DataFrame with game data
@@ -252,7 +251,7 @@ def add_head_to_head_features(games):
     Returns:
         DataFrame with head-to-head features added
     """
-    print("计算历史交锋特征...")
+    print("Calculating head-to-head features...")
     
     def compute_h2h(row, df):
         current_season = row['Season']
@@ -325,161 +324,286 @@ def add_head_to_head_features(games):
     games['H2H_Last3WinRate'] = h2h_stats.apply(lambda x: x['last_3_win_rate'])
     games['H2H_Last5WinRate'] = h2h_stats.apply(lambda x: x['last_5_win_rate'])
     
-    print("历史交锋特征计算完成")
+    print("Head-to-head features calculation complete")
     return games
 
 def add_recent_performance_features(games, window=5):
     """
-    For each game, calculate recent performance features for each team within the same season.
-    Features include recent win rate, average score differential, and momentum indicators.
+    Add features based on teams' recent performance (last N games)
     
     Args:
         games: DataFrame with game data
         window: Number of recent games to consider
         
     Returns:
-        DataFrame with recent performance features added
+        DataFrame with added recent performance features
     """
-    if 'DayNum' not in games.columns:
-        print("DayNum列未找到，跳过近期表现特征计算。")
-        games['Team1_RecentWinRate'] = 0.5
-        games['Team2_RecentWinRate'] = 0.5
-        games['Team1_RecentScoreDiff'] = 0.0
-        games['Team2_RecentScoreDiff'] = 0.0
-        return games
+    print(f"Adding recent performance features (window = {window})...")
     
-    print(f"计算近期表现特征（窗口大小={window}场比赛）...")
+    # Sort games by DayNum within each Season
+    games = games.sort_values(['Season', 'DayNum'])
+    
+    # Make a copy to avoid modifying the original DataFrame
+    result = games.copy()
+    
+    # Create a dictionary to store recent game results by team
+    recent_games = {}
     
     def recent_stats(row, team, df):
+        """Get recent performance stats for a team"""
         season = row['Season']
-        current_day = row['DayNum']
+        day = row['DayNum']
         
-        # Get all games from this season before the current game
-        past_games = df[(df['Season'] == season) & (df['DayNum'] < current_day)]
+        # Get previous games in the same season
+        prev_games = df[(df['Season'] == season) & (df['DayNum'] < day) & 
+                         ((df['Team1'] == team) | (df['Team2'] == team))].sort_values('DayNum', ascending=False).head(window)
         
-        # Filter for games involving this team
-        team_games = past_games[(past_games['Team1'] == team) | (past_games['Team2'] == team)]
-        
-        # Sort by DayNum descending to get most recent first
-        team_games = team_games.sort_values('DayNum', ascending=False)
-        
-        # Take only the last 'window' games
-        recent_games = team_games.head(window)
-        
-        if recent_games.empty:
+        if len(prev_games) == 0:
             return {
                 'win_rate': 0.5,
-                'score_diff': 0.0,
-                'streak': 0,
-                'avg_score': 60.0,
-                'avg_allowed': 60.0,
-                'games_count': 0
+                'score_diff': 0,
+                'momentum': 0,
+                'reb_avg': 0,
+                'reb_std': 0,
+                'three_pt_pct_avg': 0.33,
+                'three_pt_pct_std': 0.05
             }
         
-        # Calculate win rate
-        team1_wins = len(recent_games[(recent_games['Team1'] == team) & (recent_games['WinA'] == 1)])
-        team2_wins = len(recent_games[(recent_games['Team2'] == team) & (recent_games['WinA'] == 0)])
-        total_wins = team1_wins + team2_wins
-        win_rate = total_wins / len(recent_games)
-        
-        # Calculate score differential
+        # Calculate basic stats
+        wins = 0
         score_diffs = []
-        # Also track streak and points
-        current_streak = 0
-        won_last = None
-        total_score = 0
-        total_allowed = 0
+        reb_counts = []
+        three_pt_pcts = []
         
-        for _, game in recent_games.iterrows():
-            # Determine if team won
-            team_won = (game['Team1'] == team and game['WinA'] == 1) or (game['Team2'] == team and game['WinA'] == 0)
-            
-            # Score differential
-            if 'ScoreDiffNorm' in game:
-                if game['Team1'] == team:
-                    score_diffs.append(game['ScoreDiffNorm'])
+        for _, g in prev_games.iterrows():
+            # Determine if this team won and by how much
+            if g['Team1'] == team:
+                is_win = g['WinA'] == 1
+                if 'ScoreDiffNorm' in g:
+                    score_diff = g['ScoreDiffNorm']
                 else:
-                    score_diffs.append(-game['ScoreDiffNorm'])
-            
-            # Calculate streak
-            if won_last is None:
-                # First game in the sequence
-                won_last = team_won
-                current_streak = 1 if team_won else -1
-            elif team_won == won_last:
-                # Streak continues
-                if team_won:
-                    current_streak += 1
-                else:
-                    current_streak -= 1
-            else:
-                # Streak broken, reset
-                won_last = team_won
-                current_streak = 1 if team_won else -1
-            
-            # Add scores
-            if 'WScore' in game and 'LScore' in game:
-                if game['Team1'] == team:
-                    if game['WinA'] == 1:
-                        total_score += game['WScore']
-                        total_allowed += game['LScore']
+                    # If normalized score diff isn't available, use a default
+                    score_diff = 5 if is_win else -5
+                
+                # Get rebounding stats if available
+                if 'WOR' in g and 'WDR' in g:
+                    reb_count = g['WOR'] + g['WDR'] if is_win else g['LOR'] + g['LDR']
+                    reb_counts.append(reb_count)
+                
+                # Get three-point shooting stats if available
+                if 'WFGM3' in g and 'WFGA3' in g:
+                    if is_win:
+                        three_pt_pct = g['WFGM3'] / g['WFGA3'] if g['WFGA3'] > 0 else 0.33
                     else:
-                        total_score += game['LScore']
-                        total_allowed += game['WScore']
+                        three_pt_pct = g['LFGM3'] / g['LFGA3'] if g['LFGA3'] > 0 else 0.33
+                    three_pt_pcts.append(three_pt_pct)
+            else:  # Team2
+                is_win = g['WinA'] == 0
+                if 'ScoreDiffNorm' in g:
+                    score_diff = -g['ScoreDiffNorm']  # Reverse for Team2
                 else:
-                    if game['WinA'] == 0:
-                        total_score += game['WScore']
-                        total_allowed += game['LScore']
+                    score_diff = 5 if is_win else -5
+                
+                # Get rebounding stats if available
+                if 'WOR' in g and 'WDR' in g:
+                    reb_count = g['WOR'] + g['WDR'] if not is_win else g['LOR'] + g['LDR']
+                    reb_counts.append(reb_count)
+                
+                # Get three-point shooting stats if available
+                if 'WFGM3' in g and 'WFGA3' in g:
+                    if not is_win:
+                        three_pt_pct = g['WFGM3'] / g['WFGA3'] if g['WFGA3'] > 0 else 0.33
                     else:
-                        total_score += game['LScore']
-                        total_allowed += game['WScore']
+                        three_pt_pct = g['LFGM3'] / g['LFGA3'] if g['LFGA3'] > 0 else 0.33
+                    three_pt_pcts.append(three_pt_pct)
+            
+            if is_win:
+                wins += 1
+            
+            score_diffs.append(score_diff)
         
-        avg_score_diff = sum(score_diffs) / len(score_diffs) if score_diffs else 0.0
-        avg_score = total_score / len(recent_games) if len(recent_games) > 0 else 60.0
-        avg_allowed = total_allowed / len(recent_games) if len(recent_games) > 0 else 60.0
+        win_rate = wins / len(prev_games)
+        avg_score_diff = sum(score_diffs) / len(prev_games)
+        
+        # Calculate momentum (weighted recent performance)
+        weights = [1.0, 0.8, 0.6, 0.4, 0.2][:len(score_diffs)]
+        weights = [w / sum(weights) for w in weights]
+        momentum = sum(s * w for s, w in zip(score_diffs, weights))
+        
+        # Calculate rebounding and shooting statistics
+        reb_avg = sum(reb_counts) / len(reb_counts) if reb_counts else 0
+        reb_std = np.std(reb_counts) if len(reb_counts) > 1 else 0
+        
+        three_pt_pct_avg = sum(three_pt_pcts) / len(three_pt_pcts) if three_pt_pcts else 0.33
+        three_pt_pct_std = np.std(three_pt_pcts) if len(three_pt_pcts) > 1 else 0.05
         
         return {
             'win_rate': win_rate,
             'score_diff': avg_score_diff,
-            'streak': current_streak,
-            'avg_score': avg_score,
-            'avg_allowed': avg_allowed,
-            'games_count': len(recent_games)
+            'momentum': momentum,
+            'reb_avg': reb_avg,
+            'reb_std': reb_std,
+            'three_pt_pct_avg': three_pt_pct_avg,
+            'three_pt_pct_std': three_pt_pct_std
         }
     
-    # Apply the function to get recent stats for each team
-    recent_stats_team1 = games.apply(lambda r: recent_stats(r, r['Team1'], games), axis=1)
-    recent_stats_team2 = games.apply(lambda r: recent_stats(r, r['Team2'], games), axis=1)
+    # Process each game
+    for idx, row in result.iterrows():
+        team1 = row['Team1']
+        team2 = row['Team2']
+        season = row['Season']
+        day = row['DayNum']
+        
+        # Get recent stats for Team1
+        key1 = f"{season}_{team1}_{day}"
+        if key1 not in recent_games:
+            recent_games[key1] = recent_stats(row, team1, games)
+        
+        # Get recent stats for Team2
+        key2 = f"{season}_{team2}_{day}"
+        if key2 not in recent_games:
+            recent_games[key2] = recent_stats(row, team2, games)
+        
+        # Add to result DataFrame
+        team1_stats = recent_games[key1]
+        team2_stats = recent_games[key2]
+        
+        result.loc[idx, 'Team1_RecentWinRate'] = team1_stats['win_rate']
+        result.loc[idx, 'Team2_RecentWinRate'] = team2_stats['win_rate']
+        result.loc[idx, 'Team1_RecentScoreDiff'] = team1_stats['score_diff']
+        result.loc[idx, 'Team2_RecentScoreDiff'] = team2_stats['score_diff']
+        result.loc[idx, 'Team1_Momentum'] = team1_stats['momentum']
+        result.loc[idx, 'Team2_Momentum'] = team2_stats['momentum']
+        
+        # Add new rebounding and three-point fluctuation metrics
+        result.loc[idx, 'Team1_RecentRebAvg'] = team1_stats['reb_avg']
+        result.loc[idx, 'Team2_RecentRebAvg'] = team2_stats['reb_avg']
+        result.loc[idx, 'Team1_RecentRebStd'] = team1_stats['reb_std']
+        result.loc[idx, 'Team2_RecentRebStd'] = team2_stats['reb_std']
+        result.loc[idx, 'Team1_Recent3PtPctAvg'] = team1_stats['three_pt_pct_avg']
+        result.loc[idx, 'Team2_Recent3PtPctAvg'] = team2_stats['three_pt_pct_avg']
+        result.loc[idx, 'Team1_Recent3PtPctStd'] = team1_stats['three_pt_pct_std']
+        result.loc[idx, 'Team2_Recent3PtPctStd'] = team2_stats['three_pt_pct_std']
     
-    # Extract the values and set them as new columns
-    games['Team1_RecentWinRate'] = recent_stats_team1.apply(lambda x: x['win_rate'])
-    games['Team1_RecentScoreDiff'] = recent_stats_team1.apply(lambda x: x['score_diff'])
-    games['Team1_Streak'] = recent_stats_team1.apply(lambda x: x['streak'])
-    games['Team1_RecentAvgScore'] = recent_stats_team1.apply(lambda x: x['avg_score'])
-    games['Team1_RecentAvgAllowed'] = recent_stats_team1.apply(lambda x: x['avg_allowed'])
-    games['Team1_RecentGamesCount'] = recent_stats_team1.apply(lambda x: x['games_count'])
+    # Calculate differential metrics
+    result['RecentWinRateDiff'] = result['Team1_RecentWinRate'] - result['Team2_RecentWinRate']
+    result['RecentScoreDiffDiff'] = result['Team1_RecentScoreDiff'] - result['Team2_RecentScoreDiff']
+    result['MomentumDiff'] = result['Team1_Momentum'] - result['Team2_Momentum']
     
-    games['Team2_RecentWinRate'] = recent_stats_team2.apply(lambda x: x['win_rate'])
-    games['Team2_RecentScoreDiff'] = recent_stats_team2.apply(lambda x: x['score_diff'])
-    games['Team2_Streak'] = recent_stats_team2.apply(lambda x: x['streak'])
-    games['Team2_RecentAvgScore'] = recent_stats_team2.apply(lambda x: x['avg_score'])
-    games['Team2_RecentAvgAllowed'] = recent_stats_team2.apply(lambda x: x['avg_allowed'])
-    games['Team2_RecentGamesCount'] = recent_stats_team2.apply(lambda x: x['games_count'])
+    # New differential features for rebounding and shooting
+    result['RecentRebAvgDiff'] = result['Team1_RecentRebAvg'] - result['Team2_RecentRebAvg']
+    result['RecentRebStdDiff'] = result['Team1_RecentRebStd'] - result['Team2_RecentRebStd']
+    result['Recent3PtPctAvgDiff'] = result['Team1_Recent3PtPctAvg'] - result['Team2_Recent3PtPctAvg']
+    result['Recent3PtPctStdDiff'] = result['Team1_Recent3PtPctStd'] - result['Team2_Recent3PtPctStd']
     
-    # Calculate difference features
-    games['RecentWinRateDiff'] = games['Team1_RecentWinRate'] - games['Team2_RecentWinRate']
-    games['RecentScoreDiffDiff'] = games['Team1_RecentScoreDiff'] - games['Team2_RecentScoreDiff']
-    games['StreakDiff'] = games['Team1_Streak'] - games['Team2_Streak']
-    games['RecentAvgScoreDiff'] = games['Team1_RecentAvgScore'] - games['Team2_RecentAvgScore']
-    games['RecentAvgAllowedDiff'] = games['Team1_RecentAvgAllowed'] - games['Team2_RecentAvgAllowed']
+    # Create composite measures of consistency
+    result['Team1_Consistency'] = -result['Team1_RecentRebStd'] - result['Team1_Recent3PtPctStd'] * 100
+    result['Team2_Consistency'] = -result['Team2_RecentRebStd'] - result['Team2_Recent3PtPctStd'] * 100
+    result['ConsistencyDiff'] = result['Team1_Consistency'] - result['Team2_Consistency']
     
-    # Create momentum features (combinations)
-    games['Team1_Momentum'] = games['Team1_RecentWinRate'] * (games['Team1_Streak'] / window)
-    games['Team2_Momentum'] = games['Team2_RecentWinRate'] * (games['Team2_Streak'] / window)
-    games['MomentumDiff'] = games['Team1_Momentum'] - games['Team2_Momentum']
+    print("  Recent performance features added")
+    return result
+
+def add_feature_crosses(games):
+    """
+    Add feature crossing to enhance the predictive power of the model.
+    Creates interaction terms between important features.
     
-    print("近期表现特征计算完成")
-    return games
+    Args:
+        games: DataFrame with game data containing features to cross
+        
+    Returns:
+        DataFrame with added feature crossings
+    """
+    print("Adding feature crossing interactions...")
+    
+    # Make a copy to avoid modifying the original DataFrame
+    result = games.copy()
+    
+    # List of features to cross (important predictors)
+    seed_features = ['SeedDiff', 'SeedStrengthDiff']
+    elo_features = ['EloDiff'] if 'EloDiff' in games.columns else []
+    kenpom_features = ['AdjEM_Diff', 'AdjO_Diff', 'AdjD_Diff'] if 'AdjEM_Diff' in games.columns else []
+    shooting_features = ['EFGPctDiff', 'TSPctDiff'] if 'EFGPctDiff' in games.columns and 'TSPctDiff' in games.columns else []
+    possession_features = ['OffRebRateDiff', 'TurnoverRateDiff'] if 'OffRebRateDiff' in games.columns and 'TurnoverRateDiff' in games.columns else []
+    momentum_features = ['RecentWinRateDiff', 'MomentumDiff'] if 'RecentWinRateDiff' in games.columns and 'MomentumDiff' in games.columns else []
+    
+    # Check if features are available and create crosses
+    
+    # 1. Seed × Elo interactions
+    for seed_feat in seed_features:
+        for elo_feat in elo_features:
+            if seed_feat in result.columns and elo_feat in result.columns:
+                result[f'{seed_feat}_x_{elo_feat}'] = result[seed_feat] * result[elo_feat]
+                print(f"  Created {seed_feat} × {elo_feat} interaction")
+    
+    # 2. Seed × KenPom interactions
+    for seed_feat in seed_features:
+        for kp_feat in kenpom_features:
+            if seed_feat in result.columns and kp_feat in result.columns:
+                result[f'{seed_feat}_x_{kp_feat}'] = result[seed_feat] * result[kp_feat]
+                print(f"  Created {seed_feat} × {kp_feat} interaction")
+    
+    # 3. Elo × KenPom interactions
+    for elo_feat in elo_features:
+        for kp_feat in kenpom_features:
+            if elo_feat in result.columns and kp_feat in result.columns:
+                result[f'{elo_feat}_x_{kp_feat}'] = result[elo_feat] * result[kp_feat]
+                print(f"  Created {elo_feat} × {kp_feat} interaction")
+    
+    # 4. Shooting × Possession interactions (Four Factors interactions)
+    for shoot_feat in shooting_features:
+        for poss_feat in possession_features:
+            if shoot_feat in result.columns and poss_feat in result.columns:
+                result[f'{shoot_feat}_x_{poss_feat}'] = result[shoot_feat] * result[poss_feat]
+                print(f"  Created {shoot_feat} × {poss_feat} interaction")
+    
+    # 5. Recent performance × seed/elo interactions
+    for momnt_feat in momentum_features:
+        for seed_feat in seed_features:
+            if momnt_feat in result.columns and seed_feat in result.columns:
+                result[f'{momnt_feat}_x_{seed_feat}'] = result[momnt_feat] * result[seed_feat]
+                print(f"  Created {momnt_feat} × {seed_feat} interaction")
+        
+        for elo_feat in elo_features:
+            if momnt_feat in result.columns and elo_feat in result.columns:
+                result[f'{momnt_feat}_x_{elo_feat}'] = result[momnt_feat] * result[elo_feat]
+                print(f"  Created {momnt_feat} × {elo_feat} interaction")
+    
+    # 6. Create higher-order terms for key differentials
+    key_diffs = ['SeedDiff', 'EloDiff', 'AdjEM_Diff', 'ChampionComposite']
+    for feat in key_diffs:
+        if feat in result.columns:
+            # Square term (quadratic effect)
+            result[f'{feat}_squared'] = result[feat] ** 2
+            print(f"  Created {feat}² squared term")
+    
+    # Create a feature category that amplifies underdog advantage when present
+    if 'SeedDiff' in result.columns and 'EloDiff' in result.columns:
+        # A positive SeedDiff means Team1 has a higher seed number (worse seed)
+        # A negative EloDiff means Team1 has lower Elo (worse team)
+        # When SeedDiff > 0 and EloDiff < 0, this indicates a potential upset
+        result['UnderdogAdvantage'] = np.where(
+            (result['SeedDiff'] > 0) & (result['EloDiff'] < 0),
+            result['SeedDiff'] * -result['EloDiff'] / 100,  # Scale appropriately
+            0
+        )
+        print("  Created UnderdogAdvantage feature")
+    
+    # Championship potential composite
+    if all(feat in result.columns for feat in ['EFGPctDiff', 'TSPctDiff', 'OffRebRateDiff', 'DefRebRateDiff', 'TurnoverRateDiff']):
+        # Formula based on championship team profiles
+        result['ChampionshipPotential'] = (
+            0.30 * result['EFGPctDiff'] + 
+            0.20 * result['TSPctDiff'] +
+            0.15 * result['OffRebRateDiff'] + 
+            0.15 * result['DefRebRateDiff'] +
+            0.20 * -result['TurnoverRateDiff']  # Negative because lower TO is better
+        )
+        print("  Created ChampionshipPotential combined feature")
+    
+    print(f"Added {sum(1 for col in result.columns if '_x_' in col or '_squared' in col or col in ['UnderdogAdvantage', 'ChampionshipPotential'])} feature crosses")
+    return result
 
 def aggregate_features(games):
     """
@@ -761,603 +885,531 @@ def add_season_gametype_label(games):
 
 def add_elo_ratings(games, k_factor=20, initial_elo=1500, reset_each_season=True):
     """
-    Add Elo rating features to the games dataframe.
+    Add Elo rating features to the games DataFrame
     
     Args:
         games: DataFrame with game data
-        k_factor: K-factor for Elo calculation (controls how quickly ratings change)
-        initial_elo: Starting Elo rating for each team
-        reset_each_season: Whether to reset ratings at the start of each season
+        k_factor: K-factor for Elo calculation (higher = more volatility)
+        initial_elo: Starting Elo rating for new teams
+        reset_each_season: Whether to reset ratings each season
         
     Returns:
         DataFrame with added Elo rating features
     """
-    print("计算Elo评分特征...")
+    print("Calculating Elo rating features...")
     
-    # Initialize team Elo ratings
+    # Make a copy to avoid modifying the original DataFrame
+    result = games.copy()
+    
+    # Check if we have required columns for proper Elo calculation
+    is_submission_data = 'WTeamID' not in result.columns or 'LTeamID' not in result.columns
+    has_daynum = 'DayNum' in result.columns
+    
+    if not has_daynum:
+        # This is expected for submission data, so we make it an informational message rather than a warning
+        if is_submission_data:
+            print("  Info: Using row index for game ordering in submission data (no DayNum column needed).")
+        else:
+            print("  Info: DayNum column not found. Using row index for chronological ordering.")
+        # Create a temporary DayNum column if not present (for submission data)
+        # We'll assume the data is already sorted or it's submission data where order doesn't matter
+        result['DayNum'] = result.index
+        result['_temp_daynum_added'] = True  # Flag to remove this later
+    
+    # Initialize team Elo ratings dictionaries
     team_elos = {}
+    team_elos_before = {}
     
-    # Check if 'DayNum' column exists for sorting
-    if 'DayNum' in games.columns:
-        # Sort games by Season and DayNum to ensure chronological order
-        games_sorted = games.sort_values(by=['Season', 'DayNum']).reset_index(drop=True)
-    else:
-        # For submission data which may not have DayNum, just use Season
-        print("  'DayNum' column not found. Assuming pre-sorted or submission data.")
-        games_sorted = games.copy()
+    # Sort games by Season and DayNum to ensure chronological order within each season
+    if has_daynum or '_temp_daynum_added' in result.columns:
+        result = result.sort_values(['Season', 'DayNum'])
     
-    # Add columns for Elo ratings
-    games_sorted['Team1_Elo'] = initial_elo
-    games_sorted['Team2_Elo'] = initial_elo
-    games_sorted['EloDiff'] = 0
-    games_sorted['EloWinProbability'] = 0.5
-    
-    # Keep track of last season for potential reset
-    last_season = None
-    
-    # Loop through games in chronological order
-    for idx, row in games_sorted.iterrows():
+    # Process each game
+    for idx, row in result.iterrows():
         season = row['Season']
         
-        # Reset ratings at the start of each season if requested
-        if reset_each_season and season != last_season:
-            # Determine if we should reset or adjust ratings
-            if last_season is not None:
-                # Reset but preserve team hierarchy (regress towards mean)
-                for team_id in team_elos:
-                    team_elos[team_id] = 1500 + 0.75 * (team_elos[team_id] - 1500)
-            last_season = season
+        # Get teams involved
+        if is_submission_data:
+            team_a = row['Team1']
+            team_b = row['Team2']
+            # For submission data, we don't know the winner yet
+            winner = None
+            loser = None
+        else:
+            team_a = row['WTeamID'] if 'WTeamID' in row else row['Team1']
+            team_b = row['LTeamID'] if 'LTeamID' in row else row['Team2']
+            winner = team_a
+            loser = team_b
         
-        # Get team IDs
-        team1_id = row['Team1']
-        team2_id = row['Team2']
+        # Create season-specific team keys
+        team_a_key = f"{season}_{team_a}"
+        team_b_key = f"{season}_{team_b}"
         
-        # Initialize Elo ratings if not present
-        if team1_id not in team_elos:
-            team_elos[team1_id] = initial_elo
-        if team2_id not in team_elos:
-            team_elos[team2_id] = initial_elo
-        
-        # Record pre-game Elo ratings
-        games_sorted.at[idx, 'Team1_Elo'] = team_elos[team1_id]
-        games_sorted.at[idx, 'Team2_Elo'] = team_elos[team2_id]
-        games_sorted.at[idx, 'EloDiff'] = team_elos[team1_id] - team_elos[team2_id]
-        
-        # Calculate win probability based on Elo difference
-        elo_diff = team_elos[team1_id] - team_elos[team2_id]
-        win_prob = 1.0 / (1.0 + 10.0 ** (-elo_diff / 400.0))
-        games_sorted.at[idx, 'EloWinProbability'] = win_prob
-        
-        # Update Elo ratings based on game outcome if this is historical data
-        if 'WinA' in row:
-            # Determine actual outcome (1 if Team1 won, 0 if Team2 won)
-            actual_result = row['WinA']
+        # Initialize team Elo ratings if not already present
+        if reset_each_season:
+            # If we reset ratings each season, check season-specific keys
+            if team_a_key not in team_elos:
+                # Look for previous season's final Elo for this team
+                prev_season = season - 1
+                prev_team_key = f"{prev_season}_{team_a}"
+                if prev_team_key in team_elos:
+                    # Use previous season's rating, but regress towards the mean
+                    team_elos[team_a_key] = initial_elo + 0.75 * (team_elos[prev_team_key] - initial_elo)
+                else:
+                    team_elos[team_a_key] = initial_elo
             
-            # Calculate Elo updates
-            # Adjust K-factor based on margin of victory if score data is available
-            k = k_factor
-            if 'ScoreDiff' in row and 'WinA' in row:
-                # Get score difference in absolute terms
-                score_diff_abs = abs(row['ScoreDiff'])
-                # Add a bonus for dominant victories
-                k = k_factor * (1 + 0.1 * (score_diff_abs / 10))
+            if team_b_key not in team_elos:
+                # Look for previous season's final Elo for this team
+                prev_season = season - 1
+                prev_team_key = f"{prev_season}_{team_b}"
+                if prev_team_key in team_elos:
+                    # Use previous season's rating, but regress towards the mean
+                    team_elos[team_b_key] = initial_elo + 0.75 * (team_elos[prev_team_key] - initial_elo)
+                else:
+                    team_elos[team_b_key] = initial_elo
+        else:
+            # If we don't reset ratings, just check if the team exists in our dict
+            if team_a not in team_elos:
+                team_elos[team_a] = initial_elo
+            if team_b not in team_elos:
+                team_elos[team_b] = initial_elo
+        
+        # Retrieve current Elo ratings
+        team_a_elo = team_elos[team_a_key] if reset_each_season else team_elos[team_a]
+        team_b_elo = team_elos[team_b_key] if reset_each_season else team_elos[team_b]
+        
+        # Store Elo ratings before update
+        team_elos_before[team_a_key] = team_a_elo
+        team_elos_before[team_b_key] = team_b_elo
+        
+        # Calculate Elo if we know the actual result
+        if not is_submission_data:
+            # Elo update: Calculate expected win probability
+            elo_diff = team_a_elo - team_b_elo
+            team_a_win_prob = 1.0 / (1.0 + 10.0 ** (-elo_diff / 400.0))
             
-            # Calculate Elo updates
-            elo_update = k * (actual_result - win_prob)
+            # Update Elo ratings based on actual outcome
+            if winner == team_a:  # team_a won
+                team_a_new_elo = team_a_elo + k_factor * (1.0 - team_a_win_prob)
+                team_b_new_elo = team_b_elo + k_factor * (0.0 - (1.0 - team_a_win_prob))
+            else:  # team_b won
+                team_a_new_elo = team_a_elo + k_factor * (0.0 - team_a_win_prob)
+                team_b_new_elo = team_b_elo + k_factor * (1.0 - (1.0 - team_a_win_prob))
             
-            # Apply updates
-            team_elos[team1_id] += elo_update
-            team_elos[team2_id] -= elo_update
+            # Update team Elo ratings
+            if reset_each_season:
+                team_elos[team_a_key] = team_a_new_elo
+                team_elos[team_b_key] = team_b_new_elo
+            else:
+                team_elos[team_a] = team_a_new_elo
+                team_elos[team_b] = team_b_new_elo
     
-    # Make sure column order is preserved
-    result = games.copy()
-    result['Team1_Elo'] = games_sorted['Team1_Elo']
-    result['Team2_Elo'] = games_sorted['Team2_Elo']
-    result['EloDiff'] = games_sorted['EloDiff']
-    result['EloWinProbability'] = games_sorted['EloWinProbability']
+    # Add Elo rating features to the result DataFrame
+    for idx, row in result.iterrows():
+        season = row['Season']
+        
+        if is_submission_data:
+            team1 = row['Team1']
+            team2 = row['Team2']
+        else:
+            team1 = row['WTeamID'] if 'WTeamID' in row else row['Team1']
+            team2 = row['LTeamID'] if 'LTeamID' in row else row['Team2']
+        
+        # Get keys based on whether we're resetting per season
+        team1_key = f"{season}_{team1}" if reset_each_season else team1
+        team2_key = f"{season}_{team2}" if reset_each_season else team2
+        
+        # Set Elo ratings in the result DataFrame
+        if team1_key in team_elos_before:
+            result.loc[idx, 'Team1_Elo'] = team_elos_before[team1_key]
+        else:
+            result.loc[idx, 'Team1_Elo'] = initial_elo
+        
+        if team2_key in team_elos_before:
+            result.loc[idx, 'Team2_Elo'] = team_elos_before[team2_key]
+        else:
+            result.loc[idx, 'Team2_Elo'] = initial_elo
+        
+        # Calculate Elo difference
+        result.loc[idx, 'EloDiff'] = result.loc[idx, 'Team1_Elo'] - result.loc[idx, 'Team2_Elo']
     
-    print(f"Elo评分特征计算完成，共处理了 {len(team_elos)} 支队伍")
+    # If we added a temporary DayNum column, remove it
+    if '_temp_daynum_added' in result.columns:
+        result = result.drop(['DayNum', '_temp_daynum_added'], axis=1)
     
+    print(f"Elo rating features calculation complete, processed {len(team_elos) // (2 if reset_each_season else 1)} teams")
     return result
 
 def add_strength_of_schedule(games, team_stats, current_season=None):
     """
-    Add Strength of Schedule (SoS) features based on opponent quality.
+    Add strength of schedule (SOS) features to the games DataFrame
     
     Args:
         games: DataFrame with game data
-        team_stats: Dictionary mapping Season_TeamID to team statistics
-        current_season: Current season year (if None, use max Season in games)
+        team_stats: DataFrame with team statistics
+        current_season: Current season for filtering (optional)
         
     Returns:
-        DataFrame with added Strength of Schedule features
+        DataFrame with added strength of schedule features
     """
-    print("计算赛程强度（Strength of Schedule）特征...")
+    print("Calculating strength of schedule (SOS) features...")
     
-    if current_season is None:
-        current_season = games['Season'].max()
-    
-    # Check if team_stats is properly populated
-    if not team_stats:
-        print("  WARNING: team_stats dictionary is empty. Using default SoS values.")
-        # Set default SoS values
-        games['Team1_SOS_WinRate'] = 0.5
-        games['Team1_SOS_OffRating'] = 60
-        games['Team1_SOS_DefRating'] = 60
-        games['Team1_SOS_Combined'] = 0
-        
-        games['Team2_SOS_WinRate'] = 0.5
-        games['Team2_SOS_OffRating'] = 60
-        games['Team2_SOS_DefRating'] = 60
-        games['Team2_SOS_Combined'] = 0
-        
-        # Calculate difference features (all zero in this case)
-        games['SOS_WinRateDiff'] = 0
-        games['SOS_OffRatingDiff'] = 0
-        games['SOS_DefRatingDiff'] = 0
-        games['SOS_CombinedDiff'] = 0
-        
-        print("  赛程强度特征设置为默认值")
-        return games
-    
-    # Initialize dictionaries to store SoS metrics
-    sos_metrics = {}
-    
-    # For each team and season, calculate average opponent statistics
-    for season in games['Season'].unique():
-        season_games = games[games['Season'] == season]
-        
-        # For each team, collect opponent data
-        team_opponents = {}
-        
-        # Process games in chronological order if DayNum is available
-        if 'DayNum' in season_games.columns:
-            season_games = season_games.sort_values('DayNum')
-        
-        # Collect opponent data for each team
-        for _, row in season_games.iterrows():
-            team1_id = row['Team1']
-            team2_id = row['Team2']
-            
-            # Initialize opponent lists if needed
-            if f"{season}_{team1_id}" not in team_opponents:
-                team_opponents[f"{season}_{team1_id}"] = []
-            if f"{season}_{team2_id}" not in team_opponents:
-                team_opponents[f"{season}_{team2_id}"] = []
-            
-            # Add each team as opponent to the other
-            team_opponents[f"{season}_{team1_id}"].append(team2_id)
-            team_opponents[f"{season}_{team2_id}"].append(team1_id)
-        
-        # Calculate SoS metrics for each team
-        for team_key, opponents in team_opponents.items():
-            # Get opponent team_stats keys
-            opponent_keys = [f"{season}_{opponent}" for opponent in opponents]
-            
-            # Calculate average opponent win rate
-            opponent_win_rates = [team_stats.get(key, {}).get('win_rate', 0.5) for key in opponent_keys]
-            avg_opp_win_rate = sum(opponent_win_rates) / len(opponent_win_rates) if opponent_win_rates else 0.5
-            
-            # Calculate average opponent offensive and defensive ratings (if available)
-            opponent_off_ratings = [team_stats.get(key, {}).get('avg_score', 60) for key in opponent_keys]
-            opponent_def_ratings = [team_stats.get(key, {}).get('avg_allowed', 60) for key in opponent_keys]
-            
-            avg_opp_off_rating = sum(opponent_off_ratings) / len(opponent_off_ratings) if opponent_off_ratings else 60
-            avg_opp_def_rating = sum(opponent_def_ratings) / len(opponent_def_ratings) if opponent_def_ratings else 60
-            
-            # Store SoS metrics
-            sos_metrics[team_key] = {
-                'sos_win_rate': avg_opp_win_rate,
-                'sos_off_rating': avg_opp_off_rating,
-                'sos_def_rating': avg_opp_def_rating,
-                'sos_combined': avg_opp_win_rate * (avg_opp_off_rating - avg_opp_def_rating),
-                'num_opponents': len(opponents)
-            }
-    
-    # Create a result DataFrame
+    # Make a copy to avoid modifying the original DataFrame
     result = games.copy()
     
-    # Add SoS features to the games dataframe
-    result['Team1_SOS_WinRate'] = result['IDTeam1'].map(lambda x: sos_metrics.get(x, {}).get('sos_win_rate', 0.5))
-    result['Team1_SOS_OffRating'] = result['IDTeam1'].map(lambda x: sos_metrics.get(x, {}).get('sos_off_rating', 60))
-    result['Team1_SOS_DefRating'] = result['IDTeam1'].map(lambda x: sos_metrics.get(x, {}).get('sos_def_rating', 60))
-    result['Team1_SOS_Combined'] = result['IDTeam1'].map(lambda x: sos_metrics.get(x, {}).get('sos_combined', 0))
+    # Determine if we're dealing with submission data
+    is_submission_data = 'WTeamID' not in result.columns or 'LTeamID' not in result.columns
     
-    result['Team2_SOS_WinRate'] = result['IDTeam2'].map(lambda x: sos_metrics.get(x, {}).get('sos_win_rate', 0.5))
-    result['Team2_SOS_OffRating'] = result['IDTeam2'].map(lambda x: sos_metrics.get(x, {}).get('sos_off_rating', 60))
-    result['Team2_SOS_DefRating'] = result['IDTeam2'].map(lambda x: sos_metrics.get(x, {}).get('sos_def_rating', 60))
-    result['Team2_SOS_Combined'] = result['IDTeam2'].map(lambda x: sos_metrics.get(x, {}).get('sos_combined', 0))
+    # Set current season if not provided
+    if current_season is None:
+        current_season = result['Season'].max()
     
-    # Calculate difference features
-    result['SOS_WinRateDiff'] = result['Team1_SOS_WinRate'] - result['Team2_SOS_WinRate']
-    result['SOS_OffRatingDiff'] = result['Team1_SOS_OffRating'] - result['Team2_SOS_OffRating']
-    result['SOS_DefRatingDiff'] = result['Team1_SOS_DefRating'] - result['Team2_SOS_DefRating']
-    result['SOS_CombinedDiff'] = result['Team1_SOS_Combined'] - result['Team2_SOS_Combined']
+    # If team_stats is empty, set default SOS values
+    if not team_stats:
+        print("  No team statistics found. Setting default SOS values.")
+        sos_columns = [
+            'Team1_SOS_WinRate', 'Team1_SOS_OffRating', 'Team1_SOS_DefRating', 'Team1_SOS_Combined',
+            'Team2_SOS_WinRate', 'Team2_SOS_OffRating', 'Team2_SOS_DefRating', 'Team2_SOS_Combined',
+            'SOS_WinRateDiff', 'SOS_OffRatingDiff', 'SOS_DefRatingDiff', 'SOS_CombinedDiff'
+        ]
+        for col in sos_columns:
+            result[col] = 0.0
+        return result
+    
+    # Create a dictionary to store Strength of Schedule (SOS) metrics by team
+    sos_metrics = {}
+    
+    # Process games to calculate SOS metrics
+    for idx, row in result.iterrows():
+        season = row['Season']
+        
+        if is_submission_data:
+            team1 = row['Team1']
+            team2 = row['Team2']
+            
+            # Create team keys
+            team1_key = f"{season}_{team1}"
+            team2_key = f"{season}_{team2}"
+        else:
+            # Extract team IDs from game data
+            wteam = row['WTeamID'] if 'WTeamID' in row else row['Team1']
+            lteam = row['LTeamID'] if 'LTeamID' in row else row['Team2']
+            
+            # Create team keys
+            team1_key = f"{season}_{wteam}"
+            team2_key = f"{season}_{lteam}"
+        
+        # Initialize SOS metrics for teams if they don't exist yet
+        for team_key in [team1_key, team2_key]:
+            if team_key not in sos_metrics:
+                sos_metrics[team_key] = {
+                    'opponents': set(),
+                    'total_games': 0
+                }
+            
+        # Add opponent to SOS calculation
+        if not is_submission_data:
+            # Regular game data - we know who played whom
+            sos_metrics[team1_key]['opponents'].add(team2_key)
+            sos_metrics[team2_key]['opponents'].add(team1_key)
+            sos_metrics[team1_key]['total_games'] += 1
+            sos_metrics[team2_key]['total_games'] += 1
+    
+    # Calculate SOS metrics for each team
+    for team_key, data in sos_metrics.items():
+        # Calculate average opponent metrics
+        opponents = data['opponents']
+        
+        if not opponents:
+            # No opponents found (possibly for submission data)
+            sos_metrics[team_key]['win_rate'] = 0.5
+            sos_metrics[team_key]['off_rating'] = 100.0
+            sos_metrics[team_key]['def_rating'] = 100.0
+            sos_metrics[team_key]['combined'] = 0.0
+            continue
+        
+        # Calculate opponent average win rate
+        opp_win_rates = [team_stats.get(opp, {}).get('win_rate', 0.5) for opp in opponents]
+        avg_opp_win_rate = sum(opp_win_rates) / len(opponents)
+        
+        # Calculate opponent average offensive rating (points scored)
+        opp_off_ratings = [team_stats.get(opp, {}).get('avg_score', 60.0) for opp in opponents]
+        avg_opp_off = sum(opp_off_ratings) / len(opponents)
+        
+        # Calculate opponent average defensive rating (points allowed)
+        opp_def_ratings = [team_stats.get(opp, {}).get('avg_allowed', 60.0) for opp in opponents]
+        avg_opp_def = sum(opp_def_ratings) / len(opponents)
+        
+        # Combined SOS metric (higher = tougher schedule)
+        combined_sos = (avg_opp_win_rate - 0.5) * 100 + (avg_opp_off - avg_opp_def) / 2
+        
+        # Store SOS metrics
+        sos_metrics[team_key]['win_rate'] = avg_opp_win_rate
+        sos_metrics[team_key]['off_rating'] = avg_opp_off
+        sos_metrics[team_key]['def_rating'] = avg_opp_def
+        sos_metrics[team_key]['combined'] = combined_sos
+    
+    # Add SOS features to the result DataFrame
+    for idx, row in result.iterrows():
+        season = row['Season']
+        
+        if is_submission_data:
+            team1 = row['Team1']
+            team2 = row['Team2']
+        else:
+            # Extract team IDs from game data
+            if 'Team1' in row and 'Team2' in row:
+                team1 = row['Team1']
+                team2 = row['Team2']
+            else:
+                team1 = row['WTeamID']
+                team2 = row['LTeamID']
+        
+        # Create team keys
+        team1_key = f"{season}_{team1}"
+        team2_key = f"{season}_{team2}"
+        
+        # Add Team1 SOS features
+        if team1_key in sos_metrics:
+            result.loc[idx, 'Team1_SOS_WinRate'] = sos_metrics[team1_key]['win_rate']
+            result.loc[idx, 'Team1_SOS_OffRating'] = sos_metrics[team1_key]['off_rating']
+            result.loc[idx, 'Team1_SOS_DefRating'] = sos_metrics[team1_key]['def_rating']
+            result.loc[idx, 'Team1_SOS_Combined'] = sos_metrics[team1_key]['combined']
+        else:
+            # Default values if team not found
+            result.loc[idx, 'Team1_SOS_WinRate'] = 0.5
+            result.loc[idx, 'Team1_SOS_OffRating'] = 100.0
+            result.loc[idx, 'Team1_SOS_DefRating'] = 100.0
+            result.loc[idx, 'Team1_SOS_Combined'] = 0.0
+        
+        # Add Team2 SOS features
+        if team2_key in sos_metrics:
+            result.loc[idx, 'Team2_SOS_WinRate'] = sos_metrics[team2_key]['win_rate']
+            result.loc[idx, 'Team2_SOS_OffRating'] = sos_metrics[team2_key]['off_rating']
+            result.loc[idx, 'Team2_SOS_DefRating'] = sos_metrics[team2_key]['def_rating']
+            result.loc[idx, 'Team2_SOS_Combined'] = sos_metrics[team2_key]['combined']
+        else:
+            # Default values if team not found
+            result.loc[idx, 'Team2_SOS_WinRate'] = 0.5
+            result.loc[idx, 'Team2_SOS_OffRating'] = 100.0
+            result.loc[idx, 'Team2_SOS_DefRating'] = 100.0
+            result.loc[idx, 'Team2_SOS_Combined'] = 0.0
+        
+        # Calculate differential features
+        result.loc[idx, 'SOS_WinRateDiff'] = result.loc[idx, 'Team1_SOS_WinRate'] - result.loc[idx, 'Team2_SOS_WinRate']
+        result.loc[idx, 'SOS_OffRatingDiff'] = result.loc[idx, 'Team1_SOS_OffRating'] - result.loc[idx, 'Team2_SOS_OffRating']
+        result.loc[idx, 'SOS_DefRatingDiff'] = result.loc[idx, 'Team1_SOS_DefRating'] - result.loc[idx, 'Team2_SOS_DefRating']
+        result.loc[idx, 'SOS_CombinedDiff'] = result.loc[idx, 'Team1_SOS_Combined'] - result.loc[idx, 'Team2_SOS_Combined']
     
     print(f"赛程强度特征计算完成，共处理了 {len(sos_metrics)} 个团队-赛季组合")
-    
     return result
 
 def add_key_stat_differentials(games):
     """
-    Add key statistical differential features that are predictive of game outcomes.
-    These include rebounding rates, turnover rates, shooting percentages, etc.
+    Add key statistical differentials for shooting, rebounding, and other important metrics
     
     Args:
         games: DataFrame with game data
         
     Returns:
-        DataFrame with added statistical differential features
+        DataFrame with added key statistical differentials
     """
-    print("计算关键统计差异特征...")
+    print("Calculating key statistical differential features...")
     
-    # Columns that should be available in the detailed results data
-    required_shooting_cols = ['WFGM', 'WFGA', 'WFGM3', 'WFGA3', 'WFTM', 'WFTA', 
-                              'LFGM', 'LFGA', 'LFGM3', 'LFGA3', 'LFTM', 'LFTA']
-    required_rebounding_cols = ['WOR', 'WDR', 'LOR', 'LDR']
-    required_other_stats = ['WAst', 'WTO', 'WStl', 'WBlk', 'LAst', 'LTO', 'LStl', 'LBlk']
-    
-    # Check if detailed statistics are available
-    has_shooting_stats = all(col in games.columns for col in required_shooting_cols)
-    has_rebounding_stats = all(col in games.columns for col in required_rebounding_cols)
-    has_other_stats = all(col in games.columns for col in required_other_stats)
-    
+    # Make a copy to avoid modifying the original DataFrame
     result = games.copy()
     
-    if not has_shooting_stats and not has_rebounding_stats and not has_other_stats:
+    # Determine if we have detailed game statistics
+    # Check for the presence of detailed game statistics columns
+    required_stats = ['WFGM', 'WFGA', 'WFGM3', 'WFGA3', 'WFTM', 'WFTA',
+                      'WOR', 'WDR', 'WAst', 'WTO', 'WStl', 'WBlk', 'WPF',
+                      'LFGM', 'LFGA', 'LFGM3', 'LFGA3', 'LFTM', 'LFTA',
+                      'LOR', 'LDR', 'LAst', 'LTO', 'LStl', 'LBlk', 'LPF']
+    
+    has_stats = all(col in games.columns for col in required_stats)
+    
+    if not has_stats:
         print("  No detailed game statistics found. This is likely submission data.")
         print("  Setting default statistical values for differentials.")
         
-        # Set default values for important differentials
-        result['FGPctDiff'] = 0
-        result['3PPctDiff'] = 0
-        result['FTPctDiff'] = 0
-        result['TSPctDiff'] = 0
-        result['EFGPctDiff'] = 0
-        result['OffRebRateDiff'] = 0
-        result['DefRebRateDiff'] = 0
-        result['TurnoverRateDiff'] = 0
-        result['AssistRateDiff'] = 0
+        # Set default values for all statistical differentials
+        default_stats = {
+            'FGPctDiff': 0.0,        # Field goal percentage differential
+            '3PPctDiff': 0.0,         # 3-point percentage differential
+            'FTPctDiff': 0.0,         # Free throw percentage differential
+            'ReboundDiff': 0.0,       # Rebounding differential
+            'AstDiff': 0.0,           # Assist differential
+            'TODiff': 0.0,            # Turnover differential
+            'StlDiff': 0.0,           # Steal differential
+            'BlkDiff': 0.0,           # Block differential
+            'PFDiff': 0.0,            # Personal foul differential
+            'OffRebDiff': 0.0,        # Offensive rebound differential
+            'DefRebDiff': 0.0,        # Defensive rebound differential
+            'EffFGPctDiff': 0.0,      # Effective field goal percentage differential
+            'TORatioDiff': 0.0,       # Turnover ratio differential
+            'OffRebRateDiff': 0.0,    # Offensive rebounding rate differential
+            'FTRateDiff': 0.0,        # Free throw rate differential
+            'AstTORatioDiff': 0.0     # Assist-to-turnover ratio differential
+        }
         
-        # Return early since we don't have the necessary statistics
+        for stat, default_value in default_stats.items():
+            result[stat] = default_value
+        
         return result
     
-    # Add shooting percentage features
-    if has_shooting_stats:
-        print("  添加投篮命中率特征...")
+    # Calculate basic shooting percentages if we have stats
+    if 'WFGM' in games.columns and 'WFGA' in games.columns:
+        # Team1 shooting
+        mask = (result['WinA'] == 1)
+        result.loc[mask, 'Team1_FGM'] = result.loc[mask, 'WFGM']
+        result.loc[mask, 'Team1_FGA'] = result.loc[mask, 'WFGA']
+        result.loc[mask, 'Team1_FGM3'] = result.loc[mask, 'WFGM3']
+        result.loc[mask, 'Team1_FGA3'] = result.loc[mask, 'WFGA3']
+        result.loc[mask, 'Team1_FTM'] = result.loc[mask, 'WFTM']
+        result.loc[mask, 'Team1_FTA'] = result.loc[mask, 'WFTA']
         
-        # Initialize stat dictionaries
-        team_shooting_stats = {}
+        result.loc[~mask, 'Team1_FGM'] = result.loc[~mask, 'LFGM']
+        result.loc[~mask, 'Team1_FGA'] = result.loc[~mask, 'LFGA']
+        result.loc[~mask, 'Team1_FGM3'] = result.loc[~mask, 'LFGM3']
+        result.loc[~mask, 'Team1_FGA3'] = result.loc[~mask, 'LFGA3']
+        result.loc[~mask, 'Team1_FTM'] = result.loc[~mask, 'LFTM']
+        result.loc[~mask, 'Team1_FTA'] = result.loc[~mask, 'LFTA']
         
-        # Process historical game data to calculate team shooting stats
-        for _, row in games.iterrows():
-            season = row['Season']
-            
-            # Get teams
-            wteam_id = row['WTeamID']
-            lteam_id = row['LTeamID']
-            
-            # Process winning team stats
-            if f"{season}_{wteam_id}" not in team_shooting_stats:
-                team_shooting_stats[f"{season}_{wteam_id}"] = {
-                    'fgm': 0, 'fga': 0, 'fg3m': 0, 'fg3a': 0, 'ftm': 0, 'fta': 0,
-                    'games': 0
-                }
-            
-            team_shooting_stats[f"{season}_{wteam_id}"]['fgm'] += row['WFGM']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fg3m'] += row['WFGM3']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fg3a'] += row['WFGA3']
-            team_shooting_stats[f"{season}_{wteam_id}"]['ftm'] += row['WFTM']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
-            team_shooting_stats[f"{season}_{wteam_id}"]['games'] += 1
-            
-            # Process losing team stats
-            if f"{season}_{lteam_id}" not in team_shooting_stats:
-                team_shooting_stats[f"{season}_{lteam_id}"] = {
-                    'fgm': 0, 'fga': 0, 'fg3m': 0, 'fg3a': 0, 'ftm': 0, 'fta': 0,
-                    'games': 0
-                }
-            
-            team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['LFGM']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['LFGM3']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['LFGA3']
-            team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['LFTM']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
-            team_shooting_stats[f"{season}_{lteam_id}"]['games'] += 1
+        # Team2 shooting
+        result.loc[mask, 'Team2_FGM'] = result.loc[mask, 'LFGM']
+        result.loc[mask, 'Team2_FGA'] = result.loc[mask, 'LFGA']
+        result.loc[mask, 'Team2_FGM3'] = result.loc[mask, 'LFGM3']
+        result.loc[mask, 'Team2_FGA3'] = result.loc[mask, 'LFGA3']
+        result.loc[mask, 'Team2_FTM'] = result.loc[mask, 'LFTM']
+        result.loc[mask, 'Team2_FTA'] = result.loc[mask, 'LFTA']
         
-        # Calculate shooting percentage stats
-        for team_key in team_shooting_stats:
-            stats = team_shooting_stats[team_key]
-            
-            # Field goal percentage (overall)
-            stats['fg_pct'] = stats['fgm'] / stats['fga'] if stats['fga'] > 0 else 0.45
-            
-            # 3-point percentage
-            stats['fg3_pct'] = stats['fg3m'] / stats['fg3a'] if stats['fg3a'] > 0 else 0.33
-            
-            # Free throw percentage
-            stats['ft_pct'] = stats['ftm'] / stats['fta'] if stats['fta'] > 0 else 0.7
-            
-            # 2-point percentage (excluding 3-pointers)
-            fg2m = stats['fgm'] - stats['fg3m']
-            fg2a = stats['fga'] - stats['fg3a']
-            stats['fg2_pct'] = fg2m / fg2a if fg2a > 0 else 0.5
-            
-            # True shooting percentage (accounts for 3-pointers and free throws)
-            points = (stats['fgm'] - stats['fg3m']) * 2 + stats['fg3m'] * 3 + stats['ftm']
-            true_shooting_attempts = stats['fga'] + 0.44 * stats['fta']
-            stats['ts_pct'] = points / (2 * true_shooting_attempts) if true_shooting_attempts > 0 else 0.5
-            
-            # Effective field goal percentage (accounts for 3-pointers being worth more)
-            stats['efg_pct'] = (stats['fgm'] + 0.5 * stats['fg3m']) / stats['fga'] if stats['fga'] > 0 else 0.5
+        result.loc[~mask, 'Team2_FGM'] = result.loc[~mask, 'WFGM']
+        result.loc[~mask, 'Team2_FGA'] = result.loc[~mask, 'WFGA']
+        result.loc[~mask, 'Team2_FGM3'] = result.loc[~mask, 'WFGM3']
+        result.loc[~mask, 'Team2_FGA3'] = result.loc[~mask, 'WFGA3']
+        result.loc[~mask, 'Team2_FTM'] = result.loc[~mask, 'WFTM']
+        result.loc[~mask, 'Team2_FTA'] = result.loc[~mask, 'WFTA']
         
-        # Add shooting features to games
-        result['Team1_FGPct'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('fg_pct', 0.45))
-        result['Team1_3PPct'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('fg3_pct', 0.33))
-        result['Team1_FTPct'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('ft_pct', 0.7))
-        result['Team1_2PPct'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('fg2_pct', 0.5))
-        result['Team1_TSPct'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('ts_pct', 0.5))
-        result['Team1_EFGPct'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('efg_pct', 0.5))
-        
-        result['Team2_FGPct'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('fg_pct', 0.45))
-        result['Team2_3PPct'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('fg3_pct', 0.33))
-        result['Team2_FTPct'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('ft_pct', 0.7))
-        result['Team2_2PPct'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('fg2_pct', 0.5))
-        result['Team2_TSPct'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('ts_pct', 0.5))
-        result['Team2_EFGPct'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('efg_pct', 0.5))
-        
-        # Calculate differentials
+        # Calculate field goal percentages
+        result['Team1_FGPct'] = result['Team1_FGM'] / result['Team1_FGA'].replace(0, 1)
+        result['Team2_FGPct'] = result['Team2_FGM'] / result['Team2_FGA'].replace(0, 1)
         result['FGPctDiff'] = result['Team1_FGPct'] - result['Team2_FGPct']
+        
+        # Calculate 3-point percentages
+        result['Team1_3PPct'] = result['Team1_FGM3'] / result['Team1_FGA3'].replace(0, 1)
+        result['Team2_3PPct'] = result['Team2_FGM3'] / result['Team2_FGA3'].replace(0, 1)
         result['3PPctDiff'] = result['Team1_3PPct'] - result['Team2_3PPct']
+        
+        # Calculate free throw percentages
+        result['Team1_FTPct'] = result['Team1_FTM'] / result['Team1_FTA'].replace(0, 1)
+        result['Team2_FTPct'] = result['Team2_FTM'] / result['Team2_FTA'].replace(0, 1)
         result['FTPctDiff'] = result['Team1_FTPct'] - result['Team2_FTPct']
-        result['2PPctDiff'] = result['Team1_2PPct'] - result['Team2_2PPct']
-        result['TSPctDiff'] = result['Team1_TSPct'] - result['Team2_TSPct']
-        result['EFGPctDiff'] = result['Team1_EFGPct'] - result['Team2_EFGPct']
-    else:
-        print("  没有找到投篮命中率相关列，跳过投篮命中率特征计算")
-        # Set default values for shooting differentials
-        result['FGPctDiff'] = 0
-        result['3PPctDiff'] = 0
-        result['FTPctDiff'] = 0
-        result['TSPctDiff'] = 0
-        result['EFGPctDiff'] = 0
     
-    # Add rebounding rate features
-    if has_rebounding_stats:
-        print("  添加篮板率特征...")
+    # Calculate rebounding if we have stats
+    if 'WOR' in games.columns and 'WDR' in games.columns:
+        # Team1 rebounding
+        mask = (result['WinA'] == 1)
+        result.loc[mask, 'Team1_OR'] = result.loc[mask, 'WOR']
+        result.loc[mask, 'Team1_DR'] = result.loc[mask, 'WDR']
+        result.loc[~mask, 'Team1_OR'] = result.loc[~mask, 'LOR']
+        result.loc[~mask, 'Team1_DR'] = result.loc[~mask, 'LDR']
         
-        # Initialize stat dictionaries
-        team_rebounding_stats = {}
+        # Team2 rebounding
+        result.loc[mask, 'Team2_OR'] = result.loc[mask, 'LOR']
+        result.loc[mask, 'Team2_DR'] = result.loc[mask, 'LDR']
+        result.loc[~mask, 'Team2_OR'] = result.loc[~mask, 'WOR']
+        result.loc[~mask, 'Team2_DR'] = result.loc[~mask, 'WDR']
         
-        # Process historical game data to calculate team rebounding stats
-        for _, row in games.iterrows():
-            season = row['Season']
-            
-            # Get teams
-            wteam_id = row['WTeamID']
-            lteam_id = row['LTeamID']
-            
-            # Get rebounding stats from the game
-            w_offensive_reb = row['WOR']
-            w_defensive_reb = row['WDR']
-            l_offensive_reb = row['LOR']
-            l_defensive_reb = row['LDR']
-            
-            # Calculate total rebounds
-            w_total_reb = w_offensive_reb + w_defensive_reb
-            l_total_reb = l_offensive_reb + l_defensive_reb
-            
-            # Calculate offensive rebounding opportunities
-            w_off_reb_opps = l_defensive_reb + w_offensive_reb
-            l_off_reb_opps = w_defensive_reb + l_offensive_reb
-            
-            # Process winning team stats
-            if f"{season}_{wteam_id}" not in team_rebounding_stats:
-                team_rebounding_stats[f"{season}_{wteam_id}"] = {
-                    'offensive_reb': 0, 'defensive_reb': 0, 'total_reb': 0,
-                    'off_reb_opps': 0, 'def_reb_opps': 0, 'games': 0,
-                    'opponent_off_reb': 0, 'opponent_def_reb': 0,
-                }
-            
-            team_rebounding_stats[f"{season}_{wteam_id}"]['offensive_reb'] += w_offensive_reb
-            team_rebounding_stats[f"{season}_{wteam_id}"]['defensive_reb'] += w_defensive_reb
-            team_rebounding_stats[f"{season}_{wteam_id}"]['total_reb'] += w_total_reb
-            team_rebounding_stats[f"{season}_{wteam_id}"]['off_reb_opps'] += w_off_reb_opps
-            team_rebounding_stats[f"{season}_{wteam_id}"]['def_reb_opps'] += (w_defensive_reb + l_offensive_reb)
-            team_rebounding_stats[f"{season}_{wteam_id}"]['opponent_off_reb'] += l_offensive_reb
-            team_rebounding_stats[f"{season}_{wteam_id}"]['opponent_def_reb'] += l_defensive_reb
-            team_rebounding_stats[f"{season}_{wteam_id}"]['games'] += 1
-            
-            # Process losing team stats
-            if f"{season}_{lteam_id}" not in team_rebounding_stats:
-                team_rebounding_stats[f"{season}_{lteam_id}"] = {
-                    'offensive_reb': 0, 'defensive_reb': 0, 'total_reb': 0,
-                    'off_reb_opps': 0, 'def_reb_opps': 0, 'games': 0,
-                    'opponent_off_reb': 0, 'opponent_def_reb': 0,
-                }
-            
-            team_rebounding_stats[f"{season}_{lteam_id}"]['offensive_reb'] += l_offensive_reb
-            team_rebounding_stats[f"{season}_{lteam_id}"]['defensive_reb'] += l_defensive_reb
-            team_rebounding_stats[f"{season}_{lteam_id}"]['total_reb'] += l_total_reb
-            team_rebounding_stats[f"{season}_{lteam_id}"]['off_reb_opps'] += l_off_reb_opps
-            team_rebounding_stats[f"{season}_{lteam_id}"]['def_reb_opps'] += (l_defensive_reb + w_offensive_reb)
-            team_rebounding_stats[f"{season}_{lteam_id}"]['opponent_off_reb'] += w_offensive_reb
-            team_rebounding_stats[f"{season}_{lteam_id}"]['opponent_def_reb'] += w_defensive_reb
-            team_rebounding_stats[f"{season}_{lteam_id}"]['games'] += 1
+        # Calculate rebounding totals and differentials
+        result['Team1_TR'] = result['Team1_OR'] + result['Team1_DR']
+        result['Team2_TR'] = result['Team2_OR'] + result['Team2_DR']
+        result['ReboundDiff'] = result['Team1_TR'] - result['Team2_TR']
+        result['OffRebDiff'] = result['Team1_OR'] - result['Team2_OR']
+        result['DefRebDiff'] = result['Team1_DR'] - result['Team2_DR']
+    
+    # Calculate assists, turnovers, steals, blocks, and fouls if we have stats
+    if 'WAst' in games.columns and 'WTO' in games.columns:
+        # Team1 stats
+        mask = (result['WinA'] == 1)
+        result.loc[mask, 'Team1_Ast'] = result.loc[mask, 'WAst']
+        result.loc[mask, 'Team1_TO'] = result.loc[mask, 'WTO']
+        result.loc[mask, 'Team1_Stl'] = result.loc[mask, 'WStl']
+        result.loc[mask, 'Team1_Blk'] = result.loc[mask, 'WBlk']
+        result.loc[mask, 'Team1_PF'] = result.loc[mask, 'WPF']
         
-        # Calculate rebounding rate stats
-        for team_key in team_rebounding_stats:
-            stats = team_rebounding_stats[team_key]
-            
-            # Offensive rebounding rate
-            stats['offensive_reb_rate'] = stats['offensive_reb'] / stats['off_reb_opps'] if stats['off_reb_opps'] > 0 else 0.3
-            
-            # Defensive rebounding rate
-            stats['defensive_reb_rate'] = stats['defensive_reb'] / stats['def_reb_opps'] if stats['def_reb_opps'] > 0 else 0.7
-            
-            # Total rebounding rate
-            total_reb_opps = stats['off_reb_opps'] + stats['def_reb_opps']
-            stats['total_reb_rate'] = stats['total_reb'] / total_reb_opps if total_reb_opps > 0 else 0.5
-            
-            # Rebounding differential per game
-            total_opponent_reb = stats['opponent_off_reb'] + stats['opponent_def_reb']
-            stats['reb_diff_per_game'] = (stats['total_reb'] - total_opponent_reb) / stats['games'] if stats['games'] > 0 else 0
+        result.loc[~mask, 'Team1_Ast'] = result.loc[~mask, 'LAst']
+        result.loc[~mask, 'Team1_TO'] = result.loc[~mask, 'LTO']
+        result.loc[~mask, 'Team1_Stl'] = result.loc[~mask, 'LStl']
+        result.loc[~mask, 'Team1_Blk'] = result.loc[~mask, 'LBlk']
+        result.loc[~mask, 'Team1_PF'] = result.loc[~mask, 'LPF']
         
-        # Add rebounding features to games
-        result['Team1_OffRebRate'] = result['IDTeam1'].map(lambda x: team_rebounding_stats.get(x, {}).get('offensive_reb_rate', 0.3))
-        result['Team1_DefRebRate'] = result['IDTeam1'].map(lambda x: team_rebounding_stats.get(x, {}).get('defensive_reb_rate', 0.7))
-        result['Team1_TotalRebRate'] = result['IDTeam1'].map(lambda x: team_rebounding_stats.get(x, {}).get('total_reb_rate', 0.5))
-        result['Team1_RebDiffPerGame'] = result['IDTeam1'].map(lambda x: team_rebounding_stats.get(x, {}).get('reb_diff_per_game', 0))
+        # Team2 stats
+        result.loc[mask, 'Team2_Ast'] = result.loc[mask, 'LAst']
+        result.loc[mask, 'Team2_TO'] = result.loc[mask, 'LTO']
+        result.loc[mask, 'Team2_Stl'] = result.loc[mask, 'LStl']
+        result.loc[mask, 'Team2_Blk'] = result.loc[mask, 'LBlk']
+        result.loc[mask, 'Team2_PF'] = result.loc[mask, 'LPF']
         
-        result['Team2_OffRebRate'] = result['IDTeam2'].map(lambda x: team_rebounding_stats.get(x, {}).get('offensive_reb_rate', 0.3))
-        result['Team2_DefRebRate'] = result['IDTeam2'].map(lambda x: team_rebounding_stats.get(x, {}).get('defensive_reb_rate', 0.7))
-        result['Team2_TotalRebRate'] = result['IDTeam2'].map(lambda x: team_rebounding_stats.get(x, {}).get('total_reb_rate', 0.5))
-        result['Team2_RebDiffPerGame'] = result['IDTeam2'].map(lambda x: team_rebounding_stats.get(x, {}).get('reb_diff_per_game', 0))
+        result.loc[~mask, 'Team2_Ast'] = result.loc[~mask, 'WAst']
+        result.loc[~mask, 'Team2_TO'] = result.loc[~mask, 'WTO']
+        result.loc[~mask, 'Team2_Stl'] = result.loc[~mask, 'WStl']
+        result.loc[~mask, 'Team2_Blk'] = result.loc[~mask, 'WBlk']
+        result.loc[~mask, 'Team2_PF'] = result.loc[~mask, 'WPF']
         
         # Calculate differentials
+        result['AstDiff'] = result['Team1_Ast'] - result['Team2_Ast']
+        result['TODiff'] = result['Team1_TO'] - result['Team2_TO']
+        result['StlDiff'] = result['Team1_Stl'] - result['Team2_Stl']
+        result['BlkDiff'] = result['Team1_Blk'] - result['Team2_Blk']
+        result['PFDiff'] = result['Team1_PF'] - result['Team2_PF']
+        
+        # Calculate assist-to-turnover ratio
+        result['Team1_AstTORatio'] = result['Team1_Ast'] / result['Team1_TO'].replace(0, 1)
+        result['Team2_AstTORatio'] = result['Team2_Ast'] / result['Team2_TO'].replace(0, 1)
+        result['AstTORatioDiff'] = result['Team1_AstTORatio'] - result['Team2_AstTORatio']
+    
+    # Calculate Four Factors if we have all necessary statistics
+    if all(col in result.columns for col in ['Team1_FGM', 'Team1_FGA', 'Team1_FGM3', 'Team1_OR', 'Team1_DR', 'Team1_TO', 'Team1_FTA']):
+        # 1. Effective Field Goal Percentage: (FGM + 0.5 * 3PM) / FGA
+        result['Team1_EffFGPct'] = (result['Team1_FGM'] + 0.5 * result['Team1_FGM3']) / result['Team1_FGA'].replace(0, 1)
+        result['Team2_EffFGPct'] = (result['Team2_FGM'] + 0.5 * result['Team2_FGM3']) / result['Team2_FGA'].replace(0, 1)
+        result['EffFGPctDiff'] = result['Team1_EffFGPct'] - result['Team2_EffFGPct']
+        
+        # Estimate possessions (assuming team possessions are roughly equal)
+        result['Team1_Poss'] = result['Team1_FGA'] - result['Team1_OR'] + result['Team1_TO'] + (0.44 * result['Team1_FTA'])
+        result['Team2_Poss'] = result['Team2_FGA'] - result['Team2_OR'] + result['Team2_TO'] + (0.44 * result['Team2_FTA'])
+        
+        # 2. Turnover Rate: TO / Possessions
+        result['Team1_TORatio'] = result['Team1_TO'] / result['Team1_Poss'].replace(0, 1)
+        result['Team2_TORatio'] = result['Team2_TO'] / result['Team2_Poss'].replace(0, 1)
+        result['TORatioDiff'] = result['Team1_TORatio'] - result['Team2_TORatio']
+        
+        # 3. Offensive Rebounding Rate: OR / (OR + Opponent DR)
+        result['Team1_OffRebRate'] = result['Team1_OR'] / (result['Team1_OR'] + result['Team2_DR']).replace(0, 1)
+        result['Team2_OffRebRate'] = result['Team2_OR'] / (result['Team2_OR'] + result['Team1_DR']).replace(0, 1)
         result['OffRebRateDiff'] = result['Team1_OffRebRate'] - result['Team2_OffRebRate']
-        result['DefRebRateDiff'] = result['Team1_DefRebRate'] - result['Team2_DefRebRate']
-        result['TotalRebRateDiff'] = result['Team1_TotalRebRate'] - result['Team2_TotalRebRate']
-        result['RebDiffPerGameDiff'] = result['Team1_RebDiffPerGame'] - result['Team2_RebDiffPerGame']
-    else:
-        print("  没有找到篮板率相关列，跳过篮板率特征计算")
-        # Set default values for rebounding differentials
-        result['OffRebRateDiff'] = 0
-        result['DefRebRateDiff'] = 0
-        result['TotalRebRateDiff'] = 0
+        
+        # 4. Free Throw Rate: FTA / FGA
+        result['Team1_FTRate'] = result['Team1_FTA'] / result['Team1_FGA'].replace(0, 1)
+        result['Team2_FTRate'] = result['Team2_FTA'] / result['Team2_FGA'].replace(0, 1)
+        result['FTRateDiff'] = result['Team1_FTRate'] - result['Team2_FTRate']
     
-    # Add turnover rate and other advanced stats
-    if has_other_stats:
-        print("  添加失误率和其他高级统计特征...")
-        
-        # Initialize stat dictionaries
-        team_advanced_stats = {}
-        
-        # Process historical game data to calculate advanced team stats
-        for _, row in games.iterrows():
-            season = row['Season']
-            
-            # Get teams
-            wteam_id = row['WTeamID']
-            lteam_id = row['LTeamID']
-            
-            # Get advanced stats from the game
-            w_assists = row['WAst']
-            w_turnovers = row['WTO']
-            w_steals = row['WStl']
-            w_blocks = row['WBlk']
-            
-            l_assists = row['LAst']
-            l_turnovers = row['LTO']
-            l_steals = row['LStl']
-            l_blocks = row['LBlk']
-            
-            # Estimate possessions (simple method)
-            w_fg_attempts = row['WFGA'] if 'WFGA' in row else 0
-            l_fg_attempts = row['LFGA'] if 'LFGA' in row else 0
-            w_ft_attempts = row['WFTA'] if 'WFTA' in row else 0
-            l_ft_attempts = row['LFTA'] if 'LFTA' in row else 0
-            w_offensive_reb = row['WOR'] if 'WOR' in row else 0
-            l_offensive_reb = row['LOR'] if 'LOR' in row else 0
-            
-            # Estimate possessions for each team
-            w_possessions = w_fg_attempts + 0.44 * w_ft_attempts - w_offensive_reb + w_turnovers
-            l_possessions = l_fg_attempts + 0.44 * l_ft_attempts - l_offensive_reb + l_turnovers
-            
-            # Process winning team stats
-            if f"{season}_{wteam_id}" not in team_advanced_stats:
-                team_advanced_stats[f"{season}_{wteam_id}"] = {
-                    'assists': 0, 'turnovers': 0, 'steals': 0, 'blocks': 0,
-                    'possessions': 0, 'fgm': 0, 'games': 0
-                }
-            
-            team_advanced_stats[f"{season}_{wteam_id}"]['assists'] += w_assists
-            team_advanced_stats[f"{season}_{wteam_id}"]['turnovers'] += w_turnovers
-            team_advanced_stats[f"{season}_{wteam_id}"]['steals'] += w_steals
-            team_advanced_stats[f"{season}_{wteam_id}"]['blocks'] += w_blocks
-            team_advanced_stats[f"{season}_{wteam_id}"]['possessions'] += w_possessions
-            team_advanced_stats[f"{season}_{wteam_id}"]['fgm'] += row['WFGM'] if 'WFGM' in row else 0
-            team_advanced_stats[f"{season}_{wteam_id}"]['games'] += 1
-            
-            # Process losing team stats
-            if f"{season}_{lteam_id}" not in team_advanced_stats:
-                team_advanced_stats[f"{season}_{lteam_id}"] = {
-                    'assists': 0, 'turnovers': 0, 'steals': 0, 'blocks': 0,
-                    'possessions': 0, 'fgm': 0, 'games': 0
-                }
-            
-            team_advanced_stats[f"{season}_{lteam_id}"]['assists'] += l_assists
-            team_advanced_stats[f"{season}_{lteam_id}"]['turnovers'] += l_turnovers
-            team_advanced_stats[f"{season}_{lteam_id}"]['steals'] += l_steals
-            team_advanced_stats[f"{season}_{lteam_id}"]['blocks'] += l_blocks
-            team_advanced_stats[f"{season}_{lteam_id}"]['possessions'] += l_possessions
-            team_advanced_stats[f"{season}_{lteam_id}"]['fgm'] += row['LFGM'] if 'LFGM' in row else 0
-            team_advanced_stats[f"{season}_{lteam_id}"]['games'] += 1
-        
-        # Calculate advanced stats
-        for team_key in team_advanced_stats:
-            stats = team_advanced_stats[team_key]
-            
-            # Turnover rate (turnovers per possession)
-            stats['turnover_rate'] = stats['turnovers'] / stats['possessions'] if stats['possessions'] > 0 else 0.15
-            
-            # Assist rate (assists per field goal made)
-            stats['assist_rate'] = stats['assists'] / stats['fgm'] if stats['fgm'] > 0 else 0.5
-            
-            # Steals per game
-            stats['steals_per_game'] = stats['steals'] / stats['games'] if stats['games'] > 0 else 5
-            
-            # Blocks per game
-            stats['blocks_per_game'] = stats['blocks'] / stats['games'] if stats['games'] > 0 else 3
-            
-            # Assist-to-turnover ratio
-            stats['ast_to_ratio'] = stats['assists'] / stats['turnovers'] if stats['turnovers'] > 0 else 1.5
-        
-        # Add advanced stats features to games
-        result['Team1_TurnoverRate'] = result['IDTeam1'].map(lambda x: team_advanced_stats.get(x, {}).get('turnover_rate', 0.15))
-        result['Team1_AssistRate'] = result['IDTeam1'].map(lambda x: team_advanced_stats.get(x, {}).get('assist_rate', 0.5))
-        result['Team1_StealsPerGame'] = result['IDTeam1'].map(lambda x: team_advanced_stats.get(x, {}).get('steals_per_game', 5))
-        result['Team1_BlocksPerGame'] = result['IDTeam1'].map(lambda x: team_advanced_stats.get(x, {}).get('blocks_per_game', 3))
-        result['Team1_AstToRatio'] = result['IDTeam1'].map(lambda x: team_advanced_stats.get(x, {}).get('ast_to_ratio', 1.5))
-        
-        result['Team2_TurnoverRate'] = result['IDTeam2'].map(lambda x: team_advanced_stats.get(x, {}).get('turnover_rate', 0.15))
-        result['Team2_AssistRate'] = result['IDTeam2'].map(lambda x: team_advanced_stats.get(x, {}).get('assist_rate', 0.5))
-        result['Team2_StealsPerGame'] = result['IDTeam2'].map(lambda x: team_advanced_stats.get(x, {}).get('steals_per_game', 5))
-        result['Team2_BlocksPerGame'] = result['IDTeam2'].map(lambda x: team_advanced_stats.get(x, {}).get('blocks_per_game', 3))
-        result['Team2_AstToRatio'] = result['IDTeam2'].map(lambda x: team_advanced_stats.get(x, {}).get('ast_to_ratio', 1.5))
-        
-        # Calculate differentials
-        result['TurnoverRateDiff'] = result['Team1_TurnoverRate'] - result['Team2_TurnoverRate']
-        result['AssistRateDiff'] = result['Team1_AssistRate'] - result['Team2_AssistRate']
-        result['StealsPerGameDiff'] = result['Team1_StealsPerGame'] - result['Team2_StealsPerGame']
-        result['BlocksPerGameDiff'] = result['Team1_BlocksPerGame'] - result['Team2_BlocksPerGame']
-        result['AstToRatioDiff'] = result['Team1_AstToRatio'] - result['Team2_AstToRatio']
-    else:
-        print("  没有找到进阶统计相关列，跳过进阶统计特征计算")
-        # Set default values for advanced stat differentials
-        result['TurnoverRateDiff'] = 0
-        result['AssistRateDiff'] = 0
-    
-    print(f"关键统计差异特征计算完成")
-    
+    print("关键统计差异特征计算完成")
     return result
 
 def add_historical_tournament_performance(games, seed_dict, num_years=3):
     """
-    Add features based on teams' historical NCAA tournament performance.
-    Tracks seed history, tournament success, and progression patterns.
+    Add historical tournament performance features
     
     Args:
         games: DataFrame with game data
-        seed_dict: Dictionary mapping Season_TeamID to seed value
-        num_years: Number of previous years to consider for historical trends
+        seed_dict: Dictionary with seed information
+        num_years: Number of previous years to include
         
     Returns:
         DataFrame with added historical tournament features
     """
-    print("计算历史锦标赛表现特征...")
+    print("Calculating historical tournament performance features...")
     
     # Make a copy to avoid modifying the original DataFrame
     result = games.copy()
@@ -1679,6 +1731,9 @@ def enhance_key_stat_differentials(games):
     # Make a copy to avoid modifying the original DataFrame
     result = games.copy()
     
+    # Check if we're working with submission data or data that lacks detailed stats
+    is_submission = 'WTeamID' not in result.columns or 'LTeamID' not in result.columns
+    
     # Columns to check for detailed stats
     required_shooting_cols = ['WFGM', 'WFGA', 'WFGM3', 'WFGA3', 'WFTM', 'WFTA', 
                              'LFGM', 'LFGA', 'LFGM3', 'LFGA3', 'LFTM', 'LFTA']
@@ -1687,34 +1742,68 @@ def enhance_key_stat_differentials(games):
     
     required_turnover_cols = ['WTO', 'LTO']
     
-    # Check if detailed statistics are available
-    has_shooting_stats = all(col in games.columns for col in required_shooting_cols)
-    has_rebounding_stats = all(col in games.columns for col in required_rebounding_cols)
-    has_turnover_stats = all(col in games.columns for col in required_turnover_cols)
+    # Alternative columns that might be present in already processed data
+    alt_shooting_cols = ['Team1_FGM', 'Team1_FGA', 'Team1_FGM3', 'Team1_FGA3', 'Team1_FTM', 'Team1_FTA',
+                         'Team2_FGM', 'Team2_FGA', 'Team2_FGM3', 'Team2_FGA3', 'Team2_FTM', 'Team2_FTA']
     
+    alt_rebounding_cols = ['Team1_OR', 'Team1_DR', 'Team2_OR', 'Team2_DR']
+    
+    alt_turnover_cols = ['Team1_TO', 'Team2_TO']
+    
+    # Check if detailed statistics are available in either form
+    has_shooting_stats = (all(col in games.columns for col in required_shooting_cols) or 
+                         all(col in games.columns for col in alt_shooting_cols))
+    
+    has_rebounding_stats = (all(col in games.columns for col in required_rebounding_cols) or 
+                           all(col in games.columns for col in alt_rebounding_cols))
+    
+    has_turnover_stats = (all(col in games.columns for col in required_turnover_cols) or 
+                         all(col in games.columns for col in alt_turnover_cols))
+    
+    # Default critical indicators to ensure they exist
+    critical_indicators = [
+        'EFGPctDiff',      # Effective FG% difference
+        'TurnoverRateDiff', # Turnover rate difference
+        'OffRebRateDiff',   # Offensive rebounding rate difference
+        'TotalRebRateDiff', # Total rebounding rate difference
+        'FTRateDiff',       # Free throw rate difference 
+        'FTPctDiff',        # Free throw percentage difference
+        'TSPctDiff',        # True shooting percentage difference
+    ]
+    
+    # If we don't have the necessary stats, set default values and return
     if not (has_shooting_stats and has_rebounding_stats and has_turnover_stats):
         print("  部分统计数据未找到，设置默认值...")
         
-        # Default values for critical metrics
-        if 'FTRateDiff' not in result.columns:
-            result['FTRateDiff'] = 0.0
-        if 'FTPctDiff' not in result.columns:
-            result['FTPctDiff'] = 0.0
-        if 'OffRebRateDiff' not in result.columns:
-            result['OffRebRateDiff'] = 0.0
-        if 'TotalRebRateDiff' not in result.columns:
-            result['TotalRebRateDiff'] = 0.0
-        if 'TurnoverRateDiff' not in result.columns:
-            result['TurnoverRateDiff'] = 0.0
-        if 'EFGPctDiff' not in result.columns:
-            result['EFGPctDiff'] = 0.0
-        if 'TSPctDiff' not in result.columns:
-            result['TSPctDiff'] = 0.0
+        # First check if any of these differential features already exist in the data
+        missing_indicators = [ind for ind in critical_indicators if ind not in result.columns]
         
-        # Create a composite champion indicator with default values
+        # Set default values for critical metrics that are missing
+        for indicator in missing_indicators:
+            result[indicator] = 0.0
+        
+        # Create a composite champion indicator with default values if it doesn't exist
         if 'ChampionComposite' not in result.columns:
-            result['ChampionComposite'] = 0.0
+            # Create a basic composite score using whatever indicators we do have
+            if 'EFGPctDiff' in result.columns and 'TurnoverRateDiff' in result.columns:
+                result['ChampionComposite'] = (
+                    0.4 * result['EFGPctDiff'] + 
+                    0.25 * -result['TurnoverRateDiff']  # Negative because lower TO is better
+                )
+                
+                # Add more components if available
+                if 'OffRebRateDiff' in result.columns:
+                    result['ChampionComposite'] += 0.20 * result['OffRebRateDiff']
+                if 'FTRateDiff' in result.columns:
+                    result['ChampionComposite'] += 0.15 * result['FTRateDiff']
+            else:
+                # Default value if we can't calculate
+                result['ChampionComposite'] = 0.0
+                
+        if 'ChampionCompositeV2' not in result.columns:
+            result['ChampionCompositeV2'] = 0.0
             
+        print("  设置了默认值的关键指标:", missing_indicators)
         return result
     
     print("  计算详细的高级统计指标差异...")
@@ -1728,96 +1817,156 @@ def enhance_key_stat_differentials(games):
     for _, row in games.iterrows():
         season = row['Season']
         
-        # Get teams
-        wteam_id = row['WTeamID'] if 'WTeamID' in row else row['Team1']
-        lteam_id = row['LTeamID'] if 'LTeamID' in row else row['Team2']
+        # Get teams - handle both raw and processed data formats
+        if is_submission:
+            wteam_id = row['Team1']
+            lteam_id = row['Team2']
+        else:
+            wteam_id = row['WTeamID'] if 'WTeamID' in row else row['Team1']
+            lteam_id = row['LTeamID'] if 'LTeamID' in row else row['Team2']
         
-        # Process winning team shooting stats
+        # Use the Team1/Team2 columns if they're already processed, otherwise use W/L columns
+        using_processed = 'Team1_FGM' in games.columns
+        
+        # Process shooting stats
         if has_shooting_stats:
+            # For winning team
             if f"{season}_{wteam_id}" not in team_shooting_stats:
                 team_shooting_stats[f"{season}_{wteam_id}"] = {
                     'fgm': 0, 'fga': 0, 'fg3m': 0, 'fg3a': 0, 
                     'ftm': 0, 'fta': 0, 'pts': 0, 'games': 0
                 }
             
-            team_shooting_stats[f"{season}_{wteam_id}"]['fgm'] += row['WFGM']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fg3m'] += row['WFGM3']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fg3a'] += row['WFGA3']
-            team_shooting_stats[f"{season}_{wteam_id}"]['ftm'] += row['WFTM']
-            team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
-            team_shooting_stats[f"{season}_{wteam_id}"]['pts'] += (2 * (row['WFGM'] - row['WFGM3']) + 3 * row['WFGM3'] + row['WFTM'])
+            # Add stats based on data format
+            if using_processed:
+                # If data is already processed to Team1/Team2 format
+                if is_submission or (row['Team1'] == wteam_id):
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fgm'] += row['Team1_FGM']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['Team1_FGA']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fg3m'] += row['Team1_FGM3']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fg3a'] += row['Team1_FGA3']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['ftm'] += row['Team1_FTM']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['Team1_FTA']
+                else:
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fgm'] += row['Team2_FGM']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['Team2_FGA']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fg3m'] += row['Team2_FGM3']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fg3a'] += row['Team2_FGA3']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['ftm'] += row['Team2_FTM']
+                    team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['Team2_FTA']
+            else:
+                # Raw data format
+                team_shooting_stats[f"{season}_{wteam_id}"]['fgm'] += row['WFGM']
+                team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
+                team_shooting_stats[f"{season}_{wteam_id}"]['fg3m'] += row['WFGM3']
+                team_shooting_stats[f"{season}_{wteam_id}"]['fg3a'] += row['WFGA3']
+                team_shooting_stats[f"{season}_{wteam_id}"]['ftm'] += row['WFTM']
+                team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
+            
+            # Calculate points
+            pts = (2 * (team_shooting_stats[f"{season}_{wteam_id}"]['fgm'] - team_shooting_stats[f"{season}_{wteam_id}"]['fg3m']) + 
+                   3 * team_shooting_stats[f"{season}_{wteam_id}"]['fg3m'] + 
+                   team_shooting_stats[f"{season}_{wteam_id}"]['ftm'])
+            team_shooting_stats[f"{season}_{wteam_id}"]['pts'] += pts
             team_shooting_stats[f"{season}_{wteam_id}"]['games'] += 1
             
-            # Process losing team shooting stats
+            # For losing team (similar structure as winning team)
             if f"{season}_{lteam_id}" not in team_shooting_stats:
                 team_shooting_stats[f"{season}_{lteam_id}"] = {
                     'fgm': 0, 'fga': 0, 'fg3m': 0, 'fg3a': 0, 
                     'ftm': 0, 'fta': 0, 'pts': 0, 'games': 0
                 }
             
-            team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['LFGM']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['LFGM3']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['LFGA3']
-            team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['LFTM']
-            team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
-            team_shooting_stats[f"{season}_{lteam_id}"]['pts'] += (2 * (row['LFGM'] - row['LFGM3']) + 3 * row['LFGM3'] + row['LFTM'])
+            # Add stats based on data format
+            if using_processed:
+                # If data is already processed to Team1/Team2 format
+                if is_submission or (row['Team1'] == lteam_id):
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['Team1_FGM']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['Team1_FGA']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['Team1_FGM3']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['Team1_FGA3']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['Team1_FTM']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['Team1_FTA']
+                else:
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['Team2_FGM']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['Team2_FGA']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['Team2_FGM3']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['Team2_FGA3']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['Team2_FTM']
+                    team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['Team2_FTA']
+            else:
+                # Raw data format
+                team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['LFGM']
+                team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
+                team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['LFGM3']
+                team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['LFGA3']
+                team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['LFTM']
+                team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
+            
+            # Calculate points
+            pts = (2 * (team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] - team_shooting_stats[f"{season}_{lteam_id}"]['fg3m']) + 
+                   3 * team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] + 
+                   team_shooting_stats[f"{season}_{lteam_id}"]['ftm'])
+            team_shooting_stats[f"{season}_{lteam_id}"]['pts'] += pts
             team_shooting_stats[f"{season}_{lteam_id}"]['games'] += 1
         
-        # Process rebounding stats
+        # Process rebounding stats (similar structure for both teams)
         if has_rebounding_stats:
-            # Winning team rebounding
+            # For winning team rebounding
             if f"{season}_{wteam_id}" not in team_rebounding_stats:
                 team_rebounding_stats[f"{season}_{wteam_id}"] = {
                     'oreb': 0, 'dreb': 0, 'total_opp_dreb': 0, 'total_opp_oreb': 0, 'games': 0
                 }
             
-            team_rebounding_stats[f"{season}_{wteam_id}"]['oreb'] += row['WOR']
-            team_rebounding_stats[f"{season}_{wteam_id}"]['dreb'] += row['WDR']
-            team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_dreb'] += row['LDR']
-            team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_oreb'] += row['LOR']
+            # Add stats based on data format
+            if using_processed:
+                # If data is already processed to Team1/Team2 format
+                if is_submission or (row['Team1'] == wteam_id):
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['oreb'] += row['Team1_OR']
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['dreb'] += row['Team1_DR']
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_dreb'] += row['Team2_DR']
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_oreb'] += row['Team2_OR']
+                else:
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['oreb'] += row['Team2_OR']
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['dreb'] += row['Team2_DR']
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_dreb'] += row['Team1_DR']
+                    team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_oreb'] += row['Team1_OR']
+            else:
+                # Raw data format
+                team_rebounding_stats[f"{season}_{wteam_id}"]['oreb'] += row['WOR']
+                team_rebounding_stats[f"{season}_{wteam_id}"]['dreb'] += row['WDR']
+                team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_dreb'] += row['LDR']
+                team_rebounding_stats[f"{season}_{wteam_id}"]['total_opp_oreb'] += row['LOR']
+            
             team_rebounding_stats[f"{season}_{wteam_id}"]['games'] += 1
             
-            # Losing team rebounding
+            # For losing team rebounding
             if f"{season}_{lteam_id}" not in team_rebounding_stats:
                 team_rebounding_stats[f"{season}_{lteam_id}"] = {
                     'oreb': 0, 'dreb': 0, 'total_opp_dreb': 0, 'total_opp_oreb': 0, 'games': 0
                 }
             
-            team_rebounding_stats[f"{season}_{lteam_id}"]['oreb'] += row['LOR']
-            team_rebounding_stats[f"{season}_{lteam_id}"]['dreb'] += row['LDR']
-            team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_dreb'] += row['WDR']
-            team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_oreb'] += row['WOR']
+            # Add stats based on data format
+            if using_processed:
+                # If data is already processed to Team1/Team2 format
+                if is_submission or (row['Team1'] == lteam_id):
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['oreb'] += row['Team1_OR']
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['dreb'] += row['Team1_DR']
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_dreb'] += row['Team2_DR']
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_oreb'] += row['Team2_OR']
+                else:
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['oreb'] += row['Team2_OR']
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['dreb'] += row['Team2_DR']
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_dreb'] += row['Team1_DR']
+                    team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_oreb'] += row['Team1_OR']
+            else:
+                # Raw data format
+                team_rebounding_stats[f"{season}_{lteam_id}"]['oreb'] += row['LOR']
+                team_rebounding_stats[f"{season}_{lteam_id}"]['dreb'] += row['LDR']
+                team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_dreb'] += row['WDR']
+                team_rebounding_stats[f"{season}_{lteam_id}"]['total_opp_oreb'] += row['WOR']
+            
             team_rebounding_stats[f"{season}_{lteam_id}"]['games'] += 1
-        
-        # Process turnover stats
-        if has_turnover_stats:
-            # Winning team turnovers
-            if f"{season}_{wteam_id}" not in team_turnover_stats:
-                team_turnover_stats[f"{season}_{wteam_id}"] = {
-                    'to': 0, 'fga': 0, 'fta': 0, 'games': 0
-                }
-            
-            team_turnover_stats[f"{season}_{wteam_id}"]['to'] += row['WTO']
-            if 'WFGA' in row:
-                team_turnover_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
-            if 'WFTA' in row:
-                team_turnover_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
-            team_turnover_stats[f"{season}_{wteam_id}"]['games'] += 1
-            
-            # Losing team turnovers
-            if f"{season}_{lteam_id}" not in team_turnover_stats:
-                team_turnover_stats[f"{season}_{lteam_id}"] = {
-                    'to': 0, 'fga': 0, 'fta': 0, 'games': 0
-                }
-            
-            team_turnover_stats[f"{season}_{lteam_id}"]['to'] += row['LTO']
-            if 'LFGA' in row:
-                team_turnover_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
-            if 'LFTA' in row:
-                team_turnover_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
-            team_turnover_stats[f"{season}_{lteam_id}"]['games'] += 1
     
     # Calculate advanced shooting metrics for each team
     for team_key in team_shooting_stats:
@@ -1864,7 +2013,8 @@ def enhance_key_stat_differentials(games):
         # Turnover rate: TO / Possessions
         stats['to_rate'] = stats['to'] / possessions if possessions > 0 else 0.15
     
-    # Map team ID keys
+    # Map team ID keys based on data format
+    # For submission data or already processed data
     team1_key = 'IDTeam1' if 'IDTeam1' in result.columns else None
     team2_key = 'IDTeam2' if 'IDTeam2' in result.columns else None
     
@@ -1877,15 +2027,13 @@ def enhance_key_stat_differentials(games):
             team2_key = 'IDTeam2'
         else:
             print("  警告: 无法构造队伍ID键，使用默认值")
-            # Set default values
-            result['FTRateDiff'] = 0.0
-            result['FTPctDiff'] = 0.0
-            result['EFGPctDiff'] = 0.0
-            result['TSPctDiff'] = 0.0
-            result['OffRebRateDiff'] = 0.0
-            result['DefRebRateDiff'] = 0.0
-            result['TotalRebRateDiff'] = 0.0
-            result['TurnoverRateDiff'] = 0.0
+            # Set default values for critical metrics
+            for indicator in critical_indicators:
+                result[indicator] = 0.0
+            
+            # Create default composite indicators
+            result['ChampionComposite'] = 0.0
+            result['ChampionCompositeV2'] = 0.0
             return result
     
     # Add shooting features

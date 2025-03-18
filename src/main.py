@@ -115,6 +115,10 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         print(f"Error merging KenPom features: {e}")
         print("Continuing without KenPom features...")
     
+    # Add feature crosses after all other features have been calculated
+    print("Adding feature interactions to improve predictive power...")
+    games = feature_engineering.add_feature_crosses(games)
+    
     # Step 7: Aggregate features
     agg_features = feature_engineering.aggregate_features(games)
     
@@ -179,6 +183,9 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     except Exception as e:
         print(f"Error merging KenPom features to submission: {e}")
     
+    # Add feature interactions to submission data
+    submission_df = feature_engineering.add_feature_crosses(submission_df)
+    
     # Apply new features to evaluation data if in simulation mode
     if simulation_mode and eval_data is not None and not eval_data.empty:
         print("Adding advanced predictive features to evaluation data...")
@@ -195,6 +202,9 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
                 eval_data = feature_engineering.enhance_kenpom_features(eval_data, kenpom_df)
         except Exception as e:
             print(f"Error merging KenPom features to evaluation data: {e}")
+        
+        # Add feature interactions to evaluation data
+        eval_data = feature_engineering.add_feature_crosses(eval_data)
     
     # Verify submission data integrity after all feature engineering
     if 'original_index' in submission_df.columns:
@@ -363,78 +373,78 @@ def find_best_threshold(X_train, y_train, features, use_extended_models=False):
     
     print("Finding best threshold based on Brier Score using time-series cross-validation...")
     
-    # 检查是否有Season列用于时间序列验证
+    # Check if Season column exists for time series validation
     if 'Season' not in X_train.columns:
-        print("警告: 'Season'列未找到，无法进行时间序列验证。将使用默认阈值0.5")
+        print("Warning: 'Season' column not found. Using default threshold 0.5")
         return 0.5
     
-    # 获取所有唯一的赛季并排序
+    # Get all unique seasons and sort them
     seasons = np.sort(X_train['Season'].unique())
-    print(f"找到{len(seasons)}个赛季用于时间序列验证: {seasons}")
+    print(f"Found {len(seasons)} seasons for time series validation: {seasons}")
     
     if len(seasons) <= 1:
-        print("警告: 只有一个赛季的数据，无法进行时间序列验证。将使用默认阈值0.5")
+        print("Warning: Only one season of data available. Using default threshold 0.5")
         return 0.5
     
-    # 初始化预测数组
+    # Initialize prediction array
     train_pred = np.zeros(len(y_train))
     train_indices_used = np.zeros(len(y_train), dtype=bool)
     
-    # 使用时间序列前向验证：对每个赛季，使用之前所有赛季的数据进行训练
-    for i, season in enumerate(seasons[1:], 1):  # 从第二个赛季开始
-        print(f"  验证赛季 {season}，使用赛季 {seasons[:i]} 的数据进行训练")
+    # Use time series forward validation: for each season, train on all previous seasons
+    for i, season in enumerate(seasons[1:], 1):  # Start from second season
+        print(f"  Validating season {season}, training on seasons {seasons[:i]}")
         
-        # 训练集：当前赛季之前的所有数据
+        # Training set: all data before current season
         train_idx = X_train[X_train['Season'] < season].index
         
-        # 验证集：当前赛季的数据
+        # Validation set: current season's data
         val_idx = X_train[X_train['Season'] == season].index
         
         if len(train_idx) == 0 or len(val_idx) == 0:
-            print(f"  警告: 赛季 {season} 的训练或验证数据为空，跳过此折")
+            print(f"  Warning: Empty training or validation data for season {season}, skipping fold")
             continue
         
         X_train_fold = X_train.loc[train_idx]
         X_val_fold = X_train.loc[val_idx]
         y_train_fold = y_train.loc[train_idx]
         
-        # 训练模型并在验证集上预测
+        # Train model and predict on validation set
         try:
             val_pred = models.stacking_ensemble_cv(X_train_fold, y_train_fold, X_val_fold, features, verbose=0, use_extended_models=use_extended_models)
             train_pred[val_idx] = val_pred
             train_indices_used[val_idx] = True
-            print(f"  赛季 {season} 验证完成，验证集大小: {len(val_idx)}")
+            print(f"  Season {season} validation complete, validation set size: {len(val_idx)}")
         except Exception as e:
-            print(f"  警告: 赛季 {season} 验证时出错: {e}")
+            print(f"  Warning: Error during validation for season {season}: {str(e)}")
             continue
     
-    # 只使用有预测的样本来计算最佳阈值
+    # Only use samples with predictions to calculate best threshold
     if np.sum(train_indices_used) == 0:
-        print("警告: 没有成功进行任何验证，将使用默认阈值0.5")
+        print("Warning: No successful validations performed. Using default threshold 0.5")
         return 0.5
     
     y_train_used = y_train[train_indices_used]
     train_pred_used = train_pred[train_indices_used]
     
-    print(f"时间序列验证完成，共使用 {np.sum(train_indices_used)} 个样本进行阈值优化")
+    print(f"Time series validation complete, using {np.sum(train_indices_used)} samples for threshold optimization")
     
-    # 计算不同阈值的Brier Score
+    # Calculate Brier Score for different thresholds
     thresholds = np.arange(0.0, 1.01, 0.01)
     best_threshold = 0.5
     best_brier_score = float('inf')
     
     for thresh in thresholds:
-        # 应用阈值到预测
+        # Apply threshold to predictions
         adjusted_preds = np.where(train_pred_used >= thresh, 1.0, 0.0)
         
-        # 计算Brier Score
+        # Calculate Brier Score
         brier = brier_score_loss(y_train_used, adjusted_preds)
         
         if brier < best_brier_score:
             best_brier_score = brier
             best_threshold = thresh
     
-    print(f"最佳阈值: {best_threshold:.2f}，Brier Score: {best_brier_score:.4f}")
+    print(f"Best threshold: {best_threshold:.2f}, Brier Score: {best_brier_score:.4f}")
     
     return best_threshold
 
