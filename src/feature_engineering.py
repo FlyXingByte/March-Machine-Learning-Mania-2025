@@ -1343,3 +1343,417 @@ def add_key_stat_differentials(games):
     print(f"关键统计差异特征计算完成")
     
     return result
+
+def add_historical_tournament_performance(games, seed_dict, num_years=3):
+    """
+    Add features based on teams' historical NCAA tournament performance.
+    Tracks seed history, tournament success, and progression patterns.
+    
+    Args:
+        games: DataFrame with game data
+        seed_dict: Dictionary mapping Season_TeamID to seed value
+        num_years: Number of previous years to consider for historical trends
+        
+    Returns:
+        DataFrame with added historical tournament features
+    """
+    print("计算历史锦标赛表现特征...")
+    
+    # Make a copy to avoid modifying the original DataFrame
+    result = games.copy()
+    
+    # Create dictionary to store tournament history by team
+    tournament_history = {}
+    
+    # Get all seasons in the data
+    seasons = sorted(games['Season'].unique())
+    
+    # For each team in the current season, look back at their tournament history
+    current_season = max(seasons)
+    
+    # Extract all TeamIDs from the current season
+    current_teams = set()
+    for _, row in games[games['Season'] == current_season].iterrows():
+        current_teams.add(row['Team1'])
+        current_teams.add(row['Team2'])
+    
+    # For each team, build tournament history
+    for team_id in current_teams:
+        team_history = []
+        
+        # Look back at past tournaments
+        for season in reversed(seasons):
+            if season == current_season:
+                continue
+                
+            # Get team's seed in that season
+            seed_key = f"{season}_{team_id}"
+            if seed_key in seed_dict:
+                seed = seed_dict[seed_key]
+                
+                # Get their tournament games in that season
+                team_tournament_games = games[
+                    (games['Season'] == season) & 
+                    (games['GameType'] == 'Tournament') & 
+                    ((games['Team1'] == team_id) | (games['Team2'] == team_id))
+                ]
+                
+                # Count wins and calculate deepest round
+                wins = 0
+                for _, row in team_tournament_games.iterrows():
+                    if (row['Team1'] == team_id and row['WinA'] == 1) or (row['Team2'] == team_id and row['WinA'] == 0):
+                        wins += 1
+                        
+                # Calculate metrics for this season
+                tournament_appearance = 1
+                season_data = {
+                    'season': season,
+                    'seed': seed,
+                    'tournament_appearance': tournament_appearance,
+                    'wins': wins,
+                    'rounds_advanced': wins  # Simplified estimate
+                }
+                team_history.append(season_data)
+        
+        # Store the history for this team
+        tournament_history[team_id] = team_history
+    
+    # Calculate historical tournament features
+    for _, row in result.iterrows():
+        team1_id = row['Team1']
+        team2_id = row['Team2']
+        season = row['Season']
+        
+        # Team 1 features
+        if team1_id in tournament_history and tournament_history[team1_id]:
+            history = tournament_history[team1_id]
+            recent_history = history[:num_years]
+            
+            # Calculate average seed, appearances, and success over recent years
+            avg_seed = sum(h['seed'] for h in recent_history) / len(recent_history) if recent_history else 16
+            total_appearances = sum(h['tournament_appearance'] for h in recent_history)
+            total_wins = sum(h['wins'] for h in recent_history)
+            deepest_run = max((h['rounds_advanced'] for h in recent_history), default=0)
+            
+            # Calculate seed trend (negative means improving/lower seeds)
+            if len(recent_history) >= 2:
+                # Calculate average change in seed from year to year
+                seed_changes = [history[i-1]['seed'] - history[i]['seed'] for i in range(1, len(history))]
+                seed_trend = sum(seed_changes) / len(seed_changes) if seed_changes else 0
+            else:
+                seed_trend = 0
+            
+            # Set values
+            result.loc[_, 'Team1_HistAvgSeed'] = avg_seed
+            result.loc[_, 'Team1_HistTourneyAppearances'] = total_appearances
+            result.loc[_, 'Team1_HistTourneyWins'] = total_wins
+            result.loc[_, 'Team1_HistDeepestRun'] = deepest_run
+            result.loc[_, 'Team1_SeedTrend'] = seed_trend
+        else:
+            # Default values for teams with no tournament history
+            result.loc[_, 'Team1_HistAvgSeed'] = 16
+            result.loc[_, 'Team1_HistTourneyAppearances'] = 0
+            result.loc[_, 'Team1_HistTourneyWins'] = 0
+            result.loc[_, 'Team1_HistDeepestRun'] = 0
+            result.loc[_, 'Team1_SeedTrend'] = 0
+        
+        # Team 2 features (same calculations)
+        if team2_id in tournament_history and tournament_history[team2_id]:
+            history = tournament_history[team2_id]
+            recent_history = history[:num_years]
+            
+            avg_seed = sum(h['seed'] for h in recent_history) / len(recent_history) if recent_history else 16
+            total_appearances = sum(h['tournament_appearance'] for h in recent_history)
+            total_wins = sum(h['wins'] for h in recent_history)
+            deepest_run = max((h['rounds_advanced'] for h in recent_history), default=0)
+            
+            if len(recent_history) >= 2:
+                seed_changes = [history[i-1]['seed'] - history[i]['seed'] for i in range(1, len(history))]
+                seed_trend = sum(seed_changes) / len(seed_changes) if seed_changes else 0
+            else:
+                seed_trend = 0
+            
+            result.loc[_, 'Team2_HistAvgSeed'] = avg_seed
+            result.loc[_, 'Team2_HistTourneyAppearances'] = total_appearances
+            result.loc[_, 'Team2_HistTourneyWins'] = total_wins
+            result.loc[_, 'Team2_HistDeepestRun'] = deepest_run
+            result.loc[_, 'Team2_SeedTrend'] = seed_trend
+        else:
+            result.loc[_, 'Team2_HistAvgSeed'] = 16
+            result.loc[_, 'Team2_HistTourneyAppearances'] = 0
+            result.loc[_, 'Team2_HistTourneyWins'] = 0
+            result.loc[_, 'Team2_HistDeepestRun'] = 0
+            result.loc[_, 'Team2_SeedTrend'] = 0
+    
+    # Calculate differential features
+    result['HistAvgSeedDiff'] = result['Team1_HistAvgSeed'] - result['Team2_HistAvgSeed']
+    result['HistTourneyAppearancesDiff'] = result['Team1_HistTourneyAppearances'] - result['Team2_HistTourneyAppearances']
+    result['HistTourneyWinsDiff'] = result['Team1_HistTourneyWins'] - result['Team2_HistTourneyWins']
+    result['HistDeepestRunDiff'] = result['Team1_HistDeepestRun'] - result['Team2_HistDeepestRun']
+    result['SeedTrendDiff'] = result['Team1_SeedTrend'] - result['Team2_SeedTrend']
+    
+    print("历史锦标赛表现特征计算完成")
+    return result
+
+def enhance_kenpom_features(games, kenpom_df):
+    """
+    Enhanced version of KenPom feature integration that ensures offensive (AdjO) and 
+    defensive (AdjD) efficiency metrics are properly captured and transformed.
+    
+    Args:
+        games: DataFrame with game information
+        kenpom_df: DataFrame with KenPom metrics
+        
+    Returns:
+        games: DataFrame with enhanced KenPom features
+    """
+    if kenpom_df.empty:
+        print("Warning: KenPom DataFrame is empty. Setting default efficiency values.")
+        result = games.copy()
+        # Set default values
+        result['Team1_AdjO'] = 100.0
+        result['Team1_AdjD'] = 100.0
+        result['Team2_AdjO'] = 100.0
+        result['Team2_AdjD'] = 100.0
+        result['AdjO_Diff'] = 0.0
+        result['AdjD_Diff'] = 0.0
+        result['AdjEM_Diff'] = 0.0
+        return result
+    
+    print("Enhancing KenPom features with offensive and defensive efficiency...")
+    result = games.copy()
+    
+    # Check for season column
+    if 'Season' not in kenpom_df.columns:
+        if 'Year' in kenpom_df.columns:
+            kenpom_df.rename(columns={'Year': 'Season'}, inplace=True)
+        else:
+            print("Warning: No 'Season' column found in KenPom data. Using 2025 as default.")
+            kenpom_df['Season'] = 2025
+    
+    # Convert Season to integer for safer merging
+    kenpom_df['Season'] = kenpom_df['Season'].astype(int)
+    
+    # Identify the offensive and defensive efficiency columns
+    offensive_col = None
+    defensive_col = None
+    efficiency_col = None
+    
+    # Look for offensive efficiency column
+    if 'ORtg' in kenpom_df.columns:
+        offensive_col = 'ORtg'
+    elif 'AdjO' in kenpom_df.columns:
+        offensive_col = 'AdjO'
+    else:
+        possible_o_cols = [col for col in kenpom_df.columns if any(term in col for term in ['Off', 'ORtg', 'Adj0', 'AdjO'])]
+        if possible_o_cols:
+            offensive_col = possible_o_cols[0]
+            print(f"Using '{offensive_col}' as offensive efficiency metric.")
+    
+    # Look for defensive efficiency column
+    if 'DRtg' in kenpom_df.columns:
+        defensive_col = 'DRtg'
+    elif 'AdjD' in kenpom_df.columns:
+        defensive_col = 'AdjD'
+    else:
+        possible_d_cols = [col for col in kenpom_df.columns if any(term in col for term in ['Def', 'DRtg', 'AdjD'])]
+        if possible_d_cols:
+            defensive_col = possible_d_cols[0]
+            print(f"Using '{defensive_col}' as defensive efficiency metric.")
+    
+    # Look for net efficiency column
+    if 'NetRtg' in kenpom_df.columns:
+        efficiency_col = 'NetRtg'
+    elif 'AdjEM' in kenpom_df.columns:
+        efficiency_col = 'AdjEM'
+    else:
+        possible_em_cols = [col for col in kenpom_df.columns if any(term in col for term in ['Net', 'EM', 'Eff'])]
+        if possible_em_cols:
+            efficiency_col = possible_em_cols[0]
+            print(f"Using '{efficiency_col}' as net efficiency metric.")
+    
+    # Ensure numeric values
+    if offensive_col:
+        kenpom_df[offensive_col] = pd.to_numeric(kenpom_df[offensive_col], errors='coerce').fillna(100.0)
+    if defensive_col:
+        kenpom_df[defensive_col] = pd.to_numeric(kenpom_df[defensive_col], errors='coerce').fillna(100.0)
+    if efficiency_col:
+        kenpom_df[efficiency_col] = pd.to_numeric(kenpom_df[efficiency_col], errors='coerce').fillna(0.0)
+    
+    # Calculate net efficiency if we have offensive and defensive but no net
+    if offensive_col and defensive_col and not efficiency_col:
+        kenpom_df['AdjEM'] = kenpom_df[offensive_col] - kenpom_df[defensive_col]
+        efficiency_col = 'AdjEM'
+        print("Calculated AdjEM as the difference between offensive and defensive efficiency.")
+    
+    # Prepare for merging
+    if 'Team' in kenpom_df.columns and 'TeamID' not in kenpom_df.columns:
+        # We need to map team names to IDs
+        # This would require team name mapping logic that depends on available data
+        print("Warning: KenPom data has team names but not IDs. This requires mapping.")
+        # For simplicity, we'll assume TeamID exists or has been mapped
+    
+    # Merge for Team1
+    if offensive_col:
+        kenpom_team1_o = kenpom_df[['Season', 'TeamID', offensive_col]].copy()
+        kenpom_team1_o.rename(columns={'TeamID': 'Team1', offensive_col: 'Team1_AdjO'}, inplace=True)
+        result = result.merge(kenpom_team1_o, how='left', on=['Season', 'Team1'])
+    
+    if defensive_col:
+        kenpom_team1_d = kenpom_df[['Season', 'TeamID', defensive_col]].copy()
+        kenpom_team1_d.rename(columns={'TeamID': 'Team1', defensive_col: 'Team1_AdjD'}, inplace=True)
+        result = result.merge(kenpom_team1_d, how='left', on=['Season', 'Team1'])
+    
+    if efficiency_col:
+        kenpom_team1_em = kenpom_df[['Season', 'TeamID', efficiency_col]].copy()
+        kenpom_team1_em.rename(columns={'TeamID': 'Team1', efficiency_col: 'Team1_AdjEM'}, inplace=True)
+        result = result.merge(kenpom_team1_em, how='left', on=['Season', 'Team1'])
+    
+    # Merge for Team2
+    if offensive_col:
+        kenpom_team2_o = kenpom_df[['Season', 'TeamID', offensive_col]].copy()
+        kenpom_team2_o.rename(columns={'TeamID': 'Team2', offensive_col: 'Team2_AdjO'}, inplace=True)
+        result = result.merge(kenpom_team2_o, how='left', on=['Season', 'Team2'])
+    
+    if defensive_col:
+        kenpom_team2_d = kenpom_df[['Season', 'TeamID', defensive_col]].copy()
+        kenpom_team2_d.rename(columns={'TeamID': 'Team2', defensive_col: 'Team2_AdjD'}, inplace=True)
+        result = result.merge(kenpom_team2_d, how='left', on=['Season', 'Team2'])
+    
+    if efficiency_col:
+        kenpom_team2_em = kenpom_df[['Season', 'TeamID', efficiency_col]].copy()
+        kenpom_team2_em.rename(columns={'TeamID': 'Team2', efficiency_col: 'Team2_AdjEM'}, inplace=True)
+        result = result.merge(kenpom_team2_em, how='left', on=['Season', 'Team2'])
+    
+    # Fill missing values with defaults
+    if offensive_col:
+        result['Team1_AdjO'] = result['Team1_AdjO'].fillna(100.0)
+        result['Team2_AdjO'] = result['Team2_AdjO'].fillna(100.0)
+        result['AdjO_Diff'] = result['Team1_AdjO'] - result['Team2_AdjO']
+    else:
+        result['Team1_AdjO'] = 100.0
+        result['Team2_AdjO'] = 100.0
+        result['AdjO_Diff'] = 0.0
+    
+    if defensive_col:
+        result['Team1_AdjD'] = result['Team1_AdjD'].fillna(100.0)
+        result['Team2_AdjD'] = result['Team2_AdjD'].fillna(100.0)
+        # Note: Lower defensive rating is better (fewer points allowed)
+        result['AdjD_Diff'] = result['Team2_AdjD'] - result['Team1_AdjD']
+    else:
+        result['Team1_AdjD'] = 100.0
+        result['Team2_AdjD'] = 100.0
+        result['AdjD_Diff'] = 0.0
+    
+    if efficiency_col:
+        result['Team1_AdjEM'] = result['Team1_AdjEM'].fillna(0.0)
+        result['Team2_AdjEM'] = result['Team2_AdjEM'].fillna(0.0)
+        result['AdjEM_Diff'] = result['Team1_AdjEM'] - result['Team2_AdjEM']
+    else:
+        result['Team1_AdjEM'] = result['Team1_AdjO'] - result['Team1_AdjD']
+        result['Team2_AdjEM'] = result['Team2_AdjO'] - result['Team2_AdjD']
+        result['AdjEM_Diff'] = result['Team1_AdjEM'] - result['Team2_AdjEM']
+    
+    print("KenPom efficiency features enhanced with offensive and defensive components.")
+    return result
+
+def enhance_key_stat_differentials(games):
+    """
+    Enhance statistical differentials with additional important metrics like free throw rate
+    and ensure we have all the key champion indicators.
+    
+    Args:
+        games: DataFrame with game data
+        
+    Returns:
+        DataFrame with additional key statistical differences
+    """
+    print("增强关键统计差异特征，添加罚球率等冠军指标...")
+    
+    # Make a copy to avoid modifying the original DataFrame
+    result = games.copy()
+    
+    # Columns to check for detailed stats
+    required_shooting_cols = ['WFGM', 'WFGA', 'WFGM3', 'WFGA3', 'WFTM', 'WFTA', 
+                             'LFGM', 'LFGA', 'LFGM3', 'LFGA3', 'LFTM', 'LFTA']
+    
+    # Check if detailed statistics are available
+    has_shooting_stats = all(col in games.columns for col in required_shooting_cols)
+    
+    if not has_shooting_stats:
+        print("  No detailed shooting statistics found. Setting default values.")
+        # Set default values for the new indicators
+        result['Team1_FTRate'] = 0.25  # Typical FT rate default
+        result['Team2_FTRate'] = 0.25
+        result['FTRateDiff'] = 0.0
+        return result
+    
+    # Initialize team shooting stats dictionary if we need to build it
+    team_shooting_stats = {}
+    
+    # Process historical game data to calculate team FT rate stats
+    for _, row in games.iterrows():
+        season = row['Season']
+        
+        # Get teams
+        wteam_id = row['WTeamID']
+        lteam_id = row['LTeamID']
+        
+        # Process winning team stats
+        if f"{season}_{wteam_id}" not in team_shooting_stats:
+            team_shooting_stats[f"{season}_{wteam_id}"] = {
+                'fta': 0, 'fga': 0, 'games': 0
+            }
+        
+        team_shooting_stats[f"{season}_{wteam_id}"]['fta'] += row['WFTA']
+        team_shooting_stats[f"{season}_{wteam_id}"]['fga'] += row['WFGA']
+        team_shooting_stats[f"{season}_{wteam_id}"]['games'] += 1
+        
+        # Process losing team stats
+        if f"{season}_{lteam_id}" not in team_shooting_stats:
+            team_shooting_stats[f"{season}_{lteam_id}"] = {
+                'fta': 0, 'fga': 0, 'games': 0
+            }
+        
+        team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
+        team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
+        team_shooting_stats[f"{season}_{lteam_id}"]['games'] += 1
+    
+    # Calculate free throw rate for each team (FTA/FGA)
+    for team_key in team_shooting_stats:
+        stats = team_shooting_stats[team_key]
+        stats['ft_rate'] = stats['fta'] / stats['fga'] if stats['fga'] > 0 else 0.25
+    
+    # Add free throw rate features
+    result['Team1_FTRate'] = result['IDTeam1'].map(lambda x: team_shooting_stats.get(x, {}).get('ft_rate', 0.25))
+    result['Team2_FTRate'] = result['IDTeam2'].map(lambda x: team_shooting_stats.get(x, {}).get('ft_rate', 0.25))
+    
+    # Calculate free throw rate differential
+    result['FTRateDiff'] = result['Team1_FTRate'] - result['Team2_FTRate']
+    
+    # Ensure we have all the critical champion indicators
+    critical_indicators = [
+        'EFGPctDiff',      # Effective FG% difference
+        'TurnoverRateDiff', # Turnover rate difference
+        'OffRebRateDiff',   # Offensive rebounding rate difference
+        'FTRateDiff',       # Free throw rate difference 
+        'FTPctDiff'         # Free throw percentage difference
+    ]
+    
+    # Check which indicators we're missing and initialize them if needed
+    for indicator in critical_indicators:
+        if indicator not in result.columns:
+            print(f"  Missing critical indicator: {indicator}. Initializing with zeros.")
+            result[indicator] = 0.0
+    
+    # Create a composite champion indicator based on these factors
+    # This combines the 'Four Factors' indicators with some weighting
+    result['ChampionComposite'] = (
+        0.4 * result['EFGPctDiff'] +      # 40% weight to shooting
+        0.25 * -result['TurnoverRateDiff'] +  # 25% weight to not turning it over (negative because lower is better)
+        0.20 * result['OffRebRateDiff'] +  # 20% weight to offensive rebounding
+        0.15 * result['FTRateDiff']        # 15% weight to getting to the line
+    )
+    
+    print("关键冠军指标增强完成")
+    return result

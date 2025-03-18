@@ -101,12 +101,14 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     games = feature_engineering.add_elo_ratings(games, k_factor=20, initial_elo=1500, reset_each_season=True)
     games = feature_engineering.add_strength_of_schedule(games, team_stats_cum)
     games = feature_engineering.add_key_stat_differentials(games)
+    games = feature_engineering.enhance_key_stat_differentials(games)
+    games = feature_engineering.add_historical_tournament_performance(games, seed_dict)
     
     # --- Merge KenPom features into training data ---
     try:
         if not kenpom_df.empty:
             print("Merging KenPom features...")
-            games = feature_engineering.merge_kenpom_features(games, kenpom_df)
+            games = feature_engineering.enhance_kenpom_features(games, kenpom_df)
         else:
             print("KenPom data is empty. Skipping KenPom feature merge.")
     except Exception as e:
@@ -164,82 +166,18 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     # Note: Key stat differentials require game details which may not be available for future games
     # But if they are in the submission data, they will be used
     submission_df = feature_engineering.add_key_stat_differentials(submission_df)
+    submission_df = feature_engineering.enhance_key_stat_differentials(submission_df)
+    submission_df = feature_engineering.add_historical_tournament_performance(submission_df, seed_dict)
     
-    # Step 9: Merge aggregated features if available
-    if not agg_features.empty and 'IDTeams_c_score' in agg_features.columns:
-        print("合并聚合特征（按赛季匹配，避免数据泄露）...")
-        
-        # 确保按赛季合并聚合特征，避免使用未来赛季的数据
-        games_with_agg = []
-        for season in games['Season'].unique():
-            season_games = games[games['Season'] == season].copy()
-            season_agg = agg_features[agg_features['Season'] == season].copy() if 'Season' in agg_features.columns else agg_features.copy()
-            
-            if not season_agg.empty:
-                # 合并当前赛季的聚合特征
-                season_games = season_games.merge(season_agg, how='left', left_on='IDTeams', right_on='IDTeams_c_score')
-                print(f"  赛季 {season}: 合并了 {len(season_agg)} 个聚合特征记录到 {len(season_games)} 场比赛")
-            else:
-                print(f"  赛季 {season}: 没有找到匹配的聚合特征")
-            
-            games_with_agg.append(season_games)
-        
-        # 合并所有赛季的数据
-        games = pd.concat(games_with_agg, ignore_index=True)
-        
-        # 对提交数据也按赛季合并聚合特征
-        submission_with_agg = []
-        for season in submission_df['Season'].unique():
-            season_submission = submission_df[submission_df['Season'] == season].copy()
-            season_agg = agg_features[agg_features['Season'] == season].copy() if 'Season' in agg_features.columns else agg_features.copy()
-            
-            if not season_agg.empty:
-                season_submission = season_submission.merge(season_agg, how='left', left_on='IDTeams', right_on='IDTeams_c_score')
-                print(f"  提交数据赛季 {season}: 合并了 {len(season_agg)} 个聚合特征记录")
-            else:
-                print(f"  提交数据赛季 {season}: 没有找到匹配的聚合特征")
-            
-            submission_with_agg.append(season_submission)
-        
-        # Sort by original index to maintain the original order after concatenation
-        submission_df = pd.concat(submission_with_agg, ignore_index=False)
-        if 'original_index' in submission_df.columns:
-            submission_df = submission_df.sort_values('original_index').reset_index(drop=True)
-            print(f"排序提交数据到原始顺序，共 {len(submission_df)} 行")
-        
-        # 对评估数据也按赛季合并聚合特征（如果在模拟模式下）
-        if simulation_mode and eval_data is not None:
-            eval_with_agg = []
-            for season in eval_data['Season'].unique():
-                season_eval = eval_data[eval_data['Season'] == season].copy()
-                season_agg = agg_features[agg_features['Season'] == season].copy() if 'Season' in agg_features.columns else agg_features.copy()
-                
-                if not season_agg.empty:
-                    season_eval = season_eval.merge(season_agg, how='left', left_on='IDTeams', right_on='IDTeams_c_score')
-                    print(f"  评估数据赛季 {season}: 合并了 {len(season_agg)} 个聚合特征记录")
-                else:
-                    print(f"  评估数据赛季 {season}: 没有找到匹配的聚合特征")
-                
-                eval_with_agg.append(season_eval)
-            
-            eval_data = pd.concat(eval_with_agg, ignore_index=True)
-    else:
-        print("没有可用的聚合特征进行合并。")
-    
-    # --- Merge KenPom features into submission data ---
+    # Try to add KenPom features to submission data
     try:
         if not kenpom_df.empty:
             print("Merging KenPom features to submission data...")
-            submission_df = feature_engineering.merge_kenpom_features(submission_df, kenpom_df)
-            
-            # Also merge for evaluation data if in simulation mode
-            if simulation_mode and eval_data is not None:
-                eval_data = feature_engineering.merge_kenpom_features(eval_data, kenpom_df)
+            submission_df = feature_engineering.enhance_kenpom_features(submission_df, kenpom_df)
         else:
             print("KenPom data is empty. Skipping KenPom feature merge for submission.")
     except Exception as e:
         print(f"Error merging KenPom features to submission: {e}")
-        print("Continuing without KenPom features in submission...")
     
     # Apply new features to evaluation data if in simulation mode
     if simulation_mode and eval_data is not None and not eval_data.empty:
@@ -247,6 +185,16 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         eval_data = feature_engineering.add_elo_ratings(eval_data, k_factor=20, initial_elo=1500, reset_each_season=True)
         eval_data = feature_engineering.add_strength_of_schedule(eval_data, team_stats_cum)
         eval_data = feature_engineering.add_key_stat_differentials(eval_data)
+        eval_data = feature_engineering.enhance_key_stat_differentials(eval_data)
+        eval_data = feature_engineering.add_historical_tournament_performance(eval_data, seed_dict)
+        
+        # Try to add KenPom features to eval data
+        try:
+            if not kenpom_df.empty:
+                print("Merging KenPom features to evaluation data...")
+                eval_data = feature_engineering.enhance_kenpom_features(eval_data, kenpom_df)
+        except Exception as e:
+            print(f"Error merging KenPom features to evaluation data: {e}")
     
     # Verify submission data integrity after all feature engineering
     if 'original_index' in submission_df.columns:
