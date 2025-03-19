@@ -20,6 +20,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
 from sklearn.tree import DecisionTreeClassifier
+from sklearn.model_selection import TimeSeriesSplit
 
 def get_base_models():
     """
@@ -176,335 +177,186 @@ def print_feature_importance(models, features):
 
 def flatten_dataframe_columns(df):
     """
-    Ensure each column in the DataFrame is a Series.
-    
-    Args:
-        df: Input DataFrame.
-        
-    Returns:
-        DataFrame with flattened columns.
+    Flattens multi-level column names that can come from imputation or feature engineering
     """
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [' '.join(col).strip() if isinstance(col, tuple) else col for col in df.columns]
+    
+    # Also ensure each column in the DataFrame is a Series (not a DataFrame)
     return pd.DataFrame({col: (val if not isinstance(val, pd.DataFrame) else val.iloc[:, 0])
                          for col, val in df.items()}, index=df.index)
 
-def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_extended_models=True):
+def align_feature_columns(train_df, test_df, model_features):
     """
-    Perform time-series cross-validation with stacking ensemble using out-of-fold meta model training.
-    Modified to use only tournament games for validation in each fold, while training on all available data.
+    Ensure that both training and test dataframes have the same feature columns
+    in the same order, adding missing columns with zeros as needed.
     
     Args:
-        X_train: Training features DataFrame.
-        y_train: Target variable Series.
-        X_test: Test features DataFrame.
-        features: List of feature names.
-        verbose: Whether to print detailed training information.
-        use_extended_models: Whether to use the extended model set (including model variants).
+        train_df: Training dataframe
+        test_df: Test dataframe
+        model_features: List of feature names to use for modeling
         
     Returns:
-        Array of predictions for the test set.
+        Tuple of aligned dataframes (train_df, test_df) and updated model_features
     """
-    # Check if 'Season' column is available for time-series CV
-    if 'Season' in X_train.columns:
-        seasons = np.sort(X_train['Season'].unique())
-        print(f"Found {len(seasons)} seasons for time-series cross-validation: {seasons}")
-        do_time_series_cv = len(seasons) > 1
-    else:
-        print("Warning: 'Season' column not found. Using regular cross-validation instead of time-series CV.")
-        do_time_series_cv = False
-        X_train['Season'] = 1
-        seasons = np.array([1])
+    print(f"Aligning features between training and test data...")
     
-    # Lists to collect out-of-fold meta features and corresponding labels,
-    # as well as meta features for the test set from each fold.
+    # Get a complete list of all unique features from both datasets
+    all_features = sorted(list(set(train_df.columns) | set(test_df.columns)))
+    
+    # Start with model features
+    valid_features = []
+    for feat in model_features:
+        # Track features that exist in both datasets or can be added
+        if feat in train_df.columns and feat in test_df.columns:
+            valid_features.append(feat)
+        elif feat in train_df.columns:
+            # Feature only in training data, add to test with zeros
+            print(f"  Adding missing feature to test data: {feat}")
+            test_df[feat] = 0
+            valid_features.append(feat)
+        elif feat in test_df.columns:
+            # Feature only in test data, add to training with zeros
+            print(f"  Adding missing feature to training data: {feat}")
+            train_df[feat] = 0
+            valid_features.append(feat)
+    
+    # Ensure both dataframes have exactly the same columns in the same order
+    train_columns = set(train_df.columns)
+    test_columns = set(test_df.columns)
+    
+    # Find features that exist in one dataframe but not the other
+    train_only = train_columns - test_columns
+    test_only = test_columns - train_columns
+    
+    # Add missing features to each dataframe
+    for feat in train_only:
+        if feat not in valid_features and feat in model_features:
+            print(f"  Adding missing feature to test data: {feat}")
+            test_df[feat] = 0
+            valid_features.append(feat)
+    
+    for feat in test_only:
+        if feat not in valid_features and feat in model_features:
+            print(f"  Adding missing feature to training data: {feat}")
+            train_df[feat] = 0
+            valid_features.append(feat)
+    
+    # Now select only the valid features, ensuring both dataframes have exactly the same columns in the same order
+    print(f"  After alignment: {len(valid_features)} valid features for modeling")
+    
+    # Verify shape consistency before returning
+    train_subset = train_df[valid_features].copy()
+    test_subset = test_df[valid_features].copy()
+    
+    print(f"  Train shape: {train_subset.shape}, Test shape: {test_subset.shape}")
+    
+    # Double-check consistency before returning
+    if set(train_subset.columns) != set(test_subset.columns):
+        print("WARNING: Column mismatch detected! Fixing...")
+        # Get a definitive shared list of columns
+        common_cols = sorted(list(set(train_subset.columns) & set(test_subset.columns)))
+        # Only use the common columns
+        train_subset = train_subset[common_cols]
+        test_subset = test_subset[common_cols]
+        valid_features = common_cols
+        print(f"  After fixing: Train shape: {train_subset.shape}, Test shape: {test_subset.shape}")
+    
+    return train_subset, test_subset, valid_features
+
+def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_extended_models=True):
+    """
+    Stacking ensemble with cross-validation.
+    Trains base models using time-series CV, then trains a meta-model on out-of-fold predictions.
+    
+    Args:
+        X_train: Training features
+        y_train: Training labels
+        X_test: Test features
+        features: List of features to use for training
+        verbose: Whether to print detailed output (0=minimal, 1=normal, 2=detailed)
+        use_extended_models: Whether to use extended model set
+        
+    Returns:
+        Numpy array of predictions for X_test
+    """
+    if verbose:
+        print("\nStacking ensemble with time-series cross-validation")
+        print(f"Input data shapes: X_train={X_train.shape}, y_train={y_train.shape}, X_test={X_test.shape}")
+        print(f"Using {len(features)} features")
+    
+    # Copy data to avoid modifying the original
+    X_train = X_train.copy()
+    X_test = X_test.copy()
+    
+    # 重要修复：重置索引以避免索引超出范围错误
+    X_train = X_train.reset_index(drop=True)
+    X_test = X_test.reset_index(drop=True)
+    y_train = y_train.reset_index(drop=True)
+    
+    # Set up cross-validation with time series split
+    if 'Season' in X_train.columns:
+        years = sorted(X_train['Season'].unique())
+        if verbose:
+            print(f"Available seasons: {years}")
+            print(f"Performing time series cross-validation:")
+        
+        # 修改交叉验证分割创建方式
+        splits = []
+        for i in range(len(years)-1):
+            train_years = years[:i+1]
+            val_year = years[i+1]
+            if verbose:
+                print(f"  Split {i+1}: Train on {train_years}, validate on {val_year}")
+            
+            # 使用布尔掩码而不是直接索引
+            train_mask = X_train['Season'].isin(train_years)
+            val_mask = X_train['Season'] == val_year
+            
+            # 只有当验证集不为空时才添加这个分割
+            if val_mask.any():
+                splits.append((np.where(train_mask)[0], np.where(val_mask)[0]))
+            else:
+                print(f"  Warning: No validation data for year {val_year}, skipping this split")
+    else:
+        # If no Season column, use default TimeSeriesSplit
+        tscv = TimeSeriesSplit(n_splits=5)
+        splits = list(tscv.split(X_train))
+        if verbose:
+            print("Using default TimeSeriesSplit without Season column")
+    
+    # Prepare for meta-model training
     meta_features_all = []
     meta_labels_all = []
     test_meta_features_all = []
-    cv_scores = []  # For reporting out-of-fold Brier scores
-    model_performances = []  # Track individual model performances
-
-    # Exclude 'Season' from features during model training.
-    model_features = [c for c in features if c != 'Season']
-
-    # Debug: print feature data types for a few features
-    if verbose:
-        print("\nFeature data types before processing:")
-        for col in model_features[:10]:
-            print(f"  {col}: {X_train[col].dtype}")
-            if X_train[col].dtype == object:
-                print(f"    Sample values: {X_train[col].iloc[:5].tolist()}")
+    cv_scores = []
+    model_performances = []  # To track model performance across folds
     
-    if do_time_series_cv:
-        # Time-series cross-validation: iterate over seasons (skip the earliest season)
-        for season in seasons[1:]:
-            if verbose:
-                print(f"\n[Stacking] Validating on season {season}")
-            # Use all data from previous seasons (both Regular and Tournament) for training
-            train_fold = X_train[X_train['Season'] < season].copy()
-            # Use only tournament games from the current season for validation
-            val_fold = X_train[(X_train['Season'] == season) & (X_train['GameType'] == 'Tournament')].copy()
-            # If no tournament data is available for validation in this season, skip the fold
-            if val_fold.empty:
-                print(f"Warning: Season {season} has no tournament data for validation; skipping this fold.")
-                continue
-            X_test_fold = X_test.copy()
-            train_y = y_train.loc[train_fold.index]
-            val_y = y_train.loc[val_fold.index]
-            
-            # One-hot encode 'GameType' if exists
-            if 'GameType' in train_fold.columns:
-                if verbose:
-                    print("One-hot encoding 'GameType' feature for training, validation and test sets.")
-                train_dummies = pd.get_dummies(train_fold['GameType'], prefix='GameType')
-                val_dummies = pd.get_dummies(val_fold['GameType'], prefix='GameType')
-                test_dummies = pd.get_dummies(X_test_fold['GameType'], prefix='GameType')
-                all_dummy_cols = sorted(set(train_dummies.columns).union(val_dummies.columns).union(test_dummies.columns))
-                train_dummies = train_dummies.reindex(columns=all_dummy_cols, fill_value=0)
-                val_dummies = val_dummies.reindex(columns=all_dummy_cols, fill_value=0)
-                test_dummies = test_dummies.reindex(columns=all_dummy_cols, fill_value=0)
-                train_fold = pd.concat([train_fold.drop(columns=['GameType']), train_dummies], axis=1)
-                val_fold = pd.concat([val_fold.drop(columns=['GameType']), val_dummies], axis=1)
-                X_test_fold = pd.concat([X_test_fold.drop(columns=['GameType']), test_dummies], axis=1)
-                if 'GameType' in model_features:
-                    model_features.remove('GameType')
-                model_features.extend(all_dummy_cols)
-            
-            # Convert object type columns to numeric if possible
-            features_to_remove = []
-            for col in model_features:
-                if (train_fold[col].dtype == object or 
-                    val_fold[col].dtype == object or 
-                    X_test_fold[col].dtype == object):
-                    if verbose:
-                        print(f"  Converting column {col} from {train_fold[col].dtype} to numeric")
-                        print(f"    Sample values: {train_fold[col].iloc[:3].tolist()}")
-                    try:
-                        train_fold[col] = pd.to_numeric(train_fold[col], errors='coerce')
-                        val_fold[col] = pd.to_numeric(val_fold[col], errors='coerce')
-                        X_test_fold[col] = pd.to_numeric(X_test_fold[col], errors='coerce')
-                    except Exception as e:
-                        print(f"  Warning: Cannot convert feature {col} to numeric - {e}")
-                        features_to_remove.append(col)
-            for col in features_to_remove:
-                if col in model_features:
-                    model_features.remove(col)
-                    print(f"  Removed non-numeric feature: {col}")
-            
-            if len(model_features) == 0:
-                print("Error: No numeric features available for training!")
-                return np.zeros(X_test.shape[0])
-            
-            if verbose:
-                print("\nFeature data types after conversion:")
-                for col in model_features[:5]:
-                    print(f"  {col}: {train_fold[col].dtype}")
-            
-            # Imputation: median with missing indicator
-            imputer = SimpleImputer(strategy='median', add_indicator=True)
-            train_imputed = imputer.fit_transform(train_fold[model_features])
-            val_imputed = imputer.transform(val_fold[model_features])
-            test_imputed = imputer.transform(X_test_fold[model_features])
-            if imputer.add_indicator:
-                indicator_features = [f"missing_{model_features[i]}" for i in imputer.indicator_.features_]
-                new_columns = model_features + indicator_features
-            else:
-                new_columns = model_features
-            
-            scaler = StandardScaler()
-            train_scaled = scaler.fit_transform(train_imputed)
-            val_scaled = scaler.transform(val_imputed)
-            test_scaled = scaler.transform(test_imputed)
-            train_norm = pd.DataFrame(train_scaled, columns=new_columns, index=train_fold.index)
-            val_norm = pd.DataFrame(val_scaled, columns=new_columns, index=val_fold.index)
-            test_norm = pd.DataFrame(test_scaled, columns=new_columns, index=X_test_fold.index)
-            train_norm = flatten_dataframe_columns(train_norm)
-            val_norm = flatten_dataframe_columns(val_norm)
-            test_norm = flatten_dataframe_columns(test_norm)
-            
-            # Train base models and collect meta features (out-of-fold predictions)
-            if use_extended_models:
-                print("Using extended model set with model variants for greater diversity")
-                base_models = get_extended_models()
-            else:
-                base_models = get_base_models()
-                
-            val_preds = []
-            test_preds = []
-            fold_model_performances = []  # Track performance for this fold
-            
-            for i, model in enumerate(base_models):
-                model_name = model.__class__.__name__
-                if verbose:
-                    print(f"  Training base model {i+1}/{len(base_models)}: {model_name}")
-                try:
-                    model.fit(train_norm, train_y)
-                except ValueError as e:
-                    if "3-fold" in str(e):
-                        print(f"Warning: Not enough samples for calibration in {model_name}, using uncalibrated base estimator for this fold.")
-                        base_est = model.estimator  
-                        base_est.fit(train_norm, train_y)
-                        if hasattr(base_est, "predict_proba"):
-                            val_pred = base_est.predict_proba(val_norm)[:, 1]
-                            test_pred = base_est.predict_proba(test_norm)[:, 1]
-                        elif hasattr(base_est, "decision_function"):
-                            val_dec = base_est.decision_function(val_norm)
-                            test_dec = base_est.decision_function(test_norm)
-                            val_pred = 1/(1+np.exp(-val_dec))
-                            test_pred = 1/(1+np.exp(-test_dec))
-                        else:
-                            val_pred = np.full(val_norm.shape[0], 0.5)
-                            test_pred = np.full(test_norm.shape[0], 0.5)
-                        val_preds.append(val_pred)
-                        test_preds.append(test_pred)
-                        
-                        # Calculate model performance (Brier score)
-                        model_brier = brier_score_loss(val_y, val_pred)
-                        fold_model_performances.append((i, model_name, model_brier))
-                        continue
-                    else:
-                        raise
-                try:
-                    if hasattr(model, 'predict_proba'):
-                        val_pred = model.predict_proba(val_norm)[:, 1]
-                        test_pred = model.predict_proba(test_norm)[:, 1]
-                    else:
-                        val_pred = model.predict(val_norm)
-                        test_pred = model.predict(test_norm)
-                        val_pred = np.clip((val_pred - val_pred.min()) / (val_pred.max() - val_pred.min() + 1e-8), 0, 1)
-                        test_pred = np.clip((test_pred - test_pred.min()) / (test_pred.max() - test_pred.min() + 1e-8), 0, 1)
-                except Exception as e:
-                    val_pred = model.predict(val_norm)
-                    test_pred = model.predict(test_norm)
-                    val_pred = np.clip((val_pred - val_pred.min()) / (val_pred.max() - val_pred.min() + 1e-8), 0, 1)
-                    test_pred = np.clip((test_pred - test_pred.min()) / (test_pred.max() - test_pred.min() + 1e-8), 0, 1)
-                
-                val_preds.append(val_pred)
-                test_preds.append(test_pred)
-                
-                # Calculate model performance (Brier score)
-                model_brier = brier_score_loss(val_y, val_pred)
-                fold_model_performances.append((i, model_name, model_brier))
-                
-                if verbose:
-                    print(f"    {model_name} Brier score: {model_brier:.4f}")
-            
-            # Store model performances for this fold
-            model_performances.append(fold_model_performances)
-            
-            # Construct meta features for the current fold
-            meta_X_val_fold = np.column_stack(val_preds)
-            meta_features_all.append(meta_X_val_fold)
-            meta_labels_all.append(val_y.to_numpy())
-            test_meta_features_all.append(np.column_stack(test_preds))
-            
-            # Optionally, report Brier score on current fold using a temporary meta-model
-            temp_meta = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
-            temp_meta.fit(meta_X_val_fold, val_y)
-            fold_brier = brier_score_loss(val_y, temp_meta.predict_proba(meta_X_val_fold)[:, 1])
-            cv_scores.append(fold_brier)
-            if verbose:
-                print(f"  Current fold temporary meta-model Brier score: {fold_brier:.4f}")
-        
-        # Aggregate out-of-fold meta features and labels if any fold was processed
-        if len(meta_features_all) == 0:
-            print("Warning: No valid folds were processed in time-series CV. Using default prediction 0.5.")
-            return np.full(X_test.shape[0], 0.5)
-        
-        meta_X_train = np.vstack(meta_features_all)
-        meta_y_train = np.concatenate(meta_labels_all)
-        # Average test meta features across folds
-        meta_test = np.mean(np.array(test_meta_features_all), axis=0)
-        
-        # Calculate average model performance across folds
-        avg_model_performance = {}
-        for fold_performances in model_performances:
-            for idx, name, score in fold_performances:
-                if name not in avg_model_performance:
-                    avg_model_performance[name] = []
-                avg_model_performance[name].append(score)
-        
-        # Calculate average Brier score for each model
-        for name, scores in avg_model_performance.items():
-            avg_model_performance[name] = np.mean(scores)
-        
-        if verbose:
-            print("\nAverage model performance across folds:")
-            for name, avg_score in sorted(avg_model_performance.items(), key=lambda x: x[1]):
-                print(f"  {name}: {avg_score:.4f}")
-        
-        # Use weighted meta-model based on model performance
-        # Convert Brier scores to weights (lower Brier score = higher weight)
-        model_weights = {}
-        for name, score in avg_model_performance.items():
-            # Invert and normalize the Brier score (lower is better)
-            model_weights[name] = 1.0 / (score + 1e-8)
-        
-        # Normalize weights to sum to 1
-        total_weight = sum(model_weights.values())
-        for name in model_weights:
-            model_weights[name] /= total_weight
-        
-        if verbose:
-            print("\nModel weights for ensemble:")
-            for name, weight in sorted(model_weights.items(), key=lambda x: x[1], reverse=True):
-                print(f"  {name}: {weight:.4f}")
-        
-        # Train final meta-model on full out-of-fold predictions
-        meta_model = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
-        if verbose:
-            print("Training final meta-model (Logistic Regression) on out-of-fold predictions")
-        meta_model.fit(meta_X_train, meta_y_train)
-        final_meta_brier = brier_score_loss(meta_y_train, meta_model.predict_proba(meta_X_train)[:, 1])
-        if verbose:
-            print(f"Out-of-fold meta-model Brier score: {final_meta_brier:.4f}")
-            print("Final meta-model coefficients:")
-            for i, coef in enumerate(meta_model.coef_[0]):
-                model_name = get_base_models()[i].__class__.__name__
-                print(f"    {model_name}: {coef:.4f}")
-        
-        # Predict test set using final meta-model
-        test_pred_ensemble = meta_model.predict_proba(meta_test)[:, 1]
-        
-        # Also create a weighted average prediction based on model performance
-        weighted_test_pred = np.zeros(meta_test.shape[0])
-        for i, model in enumerate(get_base_models()):
-            model_name = model.__class__.__name__
-            if model_name in model_weights:
-                weighted_test_pred += meta_test[:, i] * model_weights[model_name]
-        
-        # Blend the meta-model prediction with the weighted average (70% meta-model, 30% weighted average)
-        final_blend_pred = 0.7 * test_pred_ensemble + 0.3 * weighted_test_pred
-        test_pred_ensemble = final_blend_pred
+    # Remove original_index and original_ID from features
+    model_features = [f for f in features if f not in ['original_index', 'original_ID']]
     
-    else:
-        # Regular cross-validation branch (non-time-series)
+    # Align features between training and test sets
+    X_train, X_test, model_features = align_feature_columns(X_train, X_test, model_features)
+    
+    # Process by fold
+    for fold, (train_idx, val_idx) in enumerate(splits):
         if verbose:
-            print("\n[Stacking] Using regular cross-validation (no time-series)")
-        from sklearn.model_selection import train_test_split
-        # Use only tournament games for validation if available
-        if 'GameType' in X_train.columns:
-            tournament_data = X_train[X_train['GameType'] == 'Tournament']
-            if tournament_data.empty:
-                print("Warning: No tournament data available for validation; falling back to default split.")
-                train_fold, val_fold, train_y, val_y = train_test_split(
-                    X_train, y_train, test_size=0.2, random_state=42
-                )
-            else:
-                val_fold = tournament_data.copy()
-                train_fold = X_train.drop(val_fold.index)
-                train_y = y_train.loc[train_fold.index]
-                val_y = y_train.loc[val_fold.index]
-        else:
-            train_fold, val_fold, train_y, val_y = train_test_split(
-                X_train, y_train, test_size=0.2, random_state=42
-            )
+            print(f"\nProcessing fold {fold+1}/{len(splits)}")
+        
+        # 添加安全检查，确保索引在范围内
+        if np.max(train_idx) >= len(X_train) or np.max(val_idx) >= len(X_train):
+            print(f"  Warning: Indices out of bounds in fold {fold+1}. Max train index: {np.max(train_idx)}, Max val index: {np.max(val_idx)}, X_train length: {len(X_train)}")
+            print("  Skipping this fold")
+            continue
+        
+        # Split data for current fold
+        train_fold = X_train.iloc[train_idx].copy()
+        val_fold = X_train.iloc[val_idx].copy()
+        train_y = y_train.iloc[train_idx]
+        val_y = y_train.iloc[val_idx]
         X_test_fold = X_test.copy()
-        if 'Season' in train_fold.columns and 'Season' not in model_features:
-            train_fold = train_fold.drop('Season', axis=1)
-            val_fold = val_fold.drop('Season', axis=1)
-            if 'Season' in X_test_fold.columns:
-                X_test_fold = X_test_fold.drop('Season', axis=1)
         
-        # One-hot encode "GameType" if exists
+        # One-hot encode 'GameType' if exists
         if 'GameType' in train_fold.columns:
             if verbose:
                 print("One-hot encoding 'GameType' feature for training, validation and test sets.")
@@ -522,30 +374,60 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
                 model_features.remove('GameType')
             model_features.extend(all_dummy_cols)
         
+        # Convert object type columns to numeric if possible
         features_to_remove = []
         for col in model_features:
-            if (train_fold[col].dtype == object or 
-                val_fold[col].dtype == object or 
-                X_test_fold[col].dtype == object):
-                if verbose:
-                    print(f"  Converting column {col} from {train_fold[col].dtype} to numeric")
-                    print(f"    Sample values: {train_fold[col].iloc[:3].tolist()}")
-                try:
-                    train_fold[col] = pd.to_numeric(train_fold[col], errors='coerce')
-                    val_fold[col] = pd.to_numeric(val_fold[col], errors='coerce')
-                    X_test_fold[col] = pd.to_numeric(X_test_fold[col], errors='coerce')
-                except Exception as e:
-                    print(f"  Warning: Cannot convert feature {col} to numeric - {e}")
-                    features_to_remove.append(col)
+            try:
+                # Try to select the column
+                train_col = train_fold[col]
+                val_col = val_fold[col]
+                test_col = X_test_fold[col]
+                
+                # Check if any selections returned a DataFrame
+                if isinstance(train_col, pd.DataFrame):
+                    print(f"  Warning: Column '{col}' in train_fold returned a DataFrame. Using first column.")
+                    train_col = train_col.iloc[:, 0]
+                    train_fold[col] = train_col
+                
+                if isinstance(val_col, pd.DataFrame):
+                    print(f"  Warning: Column '{col}' in val_fold returned a DataFrame. Using first column.")
+                    val_col = val_col.iloc[:, 0]
+                    val_fold[col] = val_col
+                
+                if isinstance(test_col, pd.DataFrame):
+                    print(f"  Warning: Column '{col}' in X_test_fold returned a DataFrame. Using first column.")
+                    test_col = test_col.iloc[:, 0]
+                    X_test_fold[col] = test_col
+                
+                # Now check the dtype
+                if (np.issubdtype(train_col.dtype, np.object_) or 
+                    np.issubdtype(val_col.dtype, np.object_) or 
+                    np.issubdtype(test_col.dtype, np.object_)):
+                    
+                    if verbose:
+                        print(f"  Converting column {col} from {train_col.dtype} to numeric")
+                        print(f"    Sample values: {train_col.iloc[:3].tolist()}")
+                    
+                    try:
+                        train_fold[col] = pd.to_numeric(train_col, errors='coerce')
+                        val_fold[col] = pd.to_numeric(val_col, errors='coerce')
+                        X_test_fold[col] = pd.to_numeric(test_col, errors='coerce')
+                    except Exception as e:
+                        print(f"  Warning: Cannot convert feature {col} to numeric - {e}")
+                        features_to_remove.append(col)
+            except Exception as e:
+                print(f"  Warning: Error processing column {col} - {e}")
+                features_to_remove.append(col)
         for col in features_to_remove:
             if col in model_features:
                 model_features.remove(col)
                 print(f"  Removed non-numeric feature: {col}")
-            
+        
         if len(model_features) == 0:
             print("Error: No numeric features available for training!")
             return np.zeros(X_test.shape[0])
         
+        # Imputation: median with missing indicator
         imputer = SimpleImputer(strategy='median', add_indicator=True)
         train_imputed = imputer.fit_transform(train_fold[model_features])
         val_imputed = imputer.transform(val_fold[model_features])
@@ -560,14 +442,35 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
         train_scaled = scaler.fit_transform(train_imputed)
         val_scaled = scaler.transform(val_imputed)
         test_scaled = scaler.transform(test_imputed)
-        train_norm = pd.DataFrame(train_scaled, columns=new_columns, index=train_fold.index)
-        val_norm = pd.DataFrame(val_scaled, columns=new_columns, index=val_fold.index)
-        test_norm = pd.DataFrame(test_scaled, columns=new_columns, index=X_test_fold.index)
+        
+        # Ensure all dataframes have the exact same columns
+        try:
+            train_norm = pd.DataFrame(train_scaled, columns=new_columns, index=train_fold.index)
+            val_norm = pd.DataFrame(val_scaled, columns=new_columns, index=val_fold.index)
+            test_norm = pd.DataFrame(test_scaled, columns=new_columns, index=X_test_fold.index)
+        except ValueError as e:
+            print(f"ERROR during DataFrame creation: {e}")
+            print(f"Shapes: train_scaled={train_scaled.shape}, val_scaled={val_scaled.shape}, test_scaled={test_scaled.shape}")
+            print(f"new_columns length: {len(new_columns)}")
+            
+            # Fix: Ensure shapes match by truncating columns if necessary
+            column_count = min(train_scaled.shape[1], val_scaled.shape[1], test_scaled.shape[1], len(new_columns))
+            print(f"Using {column_count} columns (truncated) to ensure consistency")
+            
+            # Use only the first 'column_count' columns
+            truncated_columns = new_columns[:column_count]
+            train_norm = pd.DataFrame(train_scaled[:, :column_count], columns=truncated_columns, index=train_fold.index)
+            val_norm = pd.DataFrame(val_scaled[:, :column_count], columns=truncated_columns, index=val_fold.index)
+            test_norm = pd.DataFrame(test_scaled[:, :column_count], columns=truncated_columns, index=X_test_fold.index)
+            
+            print(f"After fixing: train_norm={train_norm.shape}, val_norm={val_norm.shape}, test_norm={test_norm.shape}")
+            
+        # Flatten any multi-level columns
         train_norm = flatten_dataframe_columns(train_norm)
         val_norm = flatten_dataframe_columns(val_norm)
         test_norm = flatten_dataframe_columns(test_norm)
         
-        # Collect out-of-fold meta features using inner CV split
+        # Train base models and collect meta features (out-of-fold predictions)
         if use_extended_models:
             print("Using extended model set with model variants for greater diversity")
             base_models = get_extended_models()
@@ -576,7 +479,7 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
             
         val_preds = []
         test_preds = []
-        model_performances = []  # Track model performances
+        fold_model_performances = []  # Track performance for this fold
         
         for i, model in enumerate(base_models):
             model_name = model.__class__.__name__
@@ -586,8 +489,8 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
                 model.fit(train_norm, train_y)
             except ValueError as e:
                 if "3-fold" in str(e):
-                    print(f"Warning: Not enough samples for calibration in {model_name}, using uncalibrated base estimator for this split.")
-                    base_est = model.estimator
+                    print(f"Warning: Not enough samples for calibration in {model_name}, using uncalibrated base estimator for this fold.")
+                    base_est = model.estimator  
                     base_est.fit(train_norm, train_y)
                     if hasattr(base_est, "predict_proba"):
                         val_pred = base_est.predict_proba(val_norm)[:, 1]
@@ -603,9 +506,9 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
                     val_preds.append(val_pred)
                     test_preds.append(test_pred)
                     
-                    # Calculate model performance
+                    # Calculate model performance (Brier score)
                     model_brier = brier_score_loss(val_y, val_pred)
-                    model_performances.append((i, model_name, model_brier))
+                    fold_model_performances.append((i, model_name, model_brier))
                     continue
                 else:
                     raise
@@ -627,65 +530,106 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
             val_preds.append(val_pred)
             test_preds.append(test_pred)
             
-            # Calculate model performance
+            # Calculate model performance (Brier score)
             model_brier = brier_score_loss(val_y, val_pred)
-            model_performances.append((i, model_name, model_brier))
+            fold_model_performances.append((i, model_name, model_brier))
             
             if verbose:
                 print(f"    {model_name} Brier score: {model_brier:.4f}")
         
-        # Convert model performances to a dictionary
-        model_perf_dict = {name: score for _, name, score in model_performances}
+        # Store model performances for this fold
+        model_performances.append(fold_model_performances)
         
+        # Construct meta features for the current fold
+        meta_X_val_fold = np.column_stack(val_preds)
+        meta_features_all.append(meta_X_val_fold)
+        meta_labels_all.append(val_y.to_numpy())
+        test_meta_features_all.append(np.column_stack(test_preds))
+        
+        # Optionally, report Brier score on current fold using a temporary meta-model
+        temp_meta = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
+        temp_meta.fit(meta_X_val_fold, val_y)
+        fold_brier = brier_score_loss(val_y, temp_meta.predict_proba(meta_X_val_fold)[:, 1])
+        cv_scores.append(fold_brier)
         if verbose:
-            print("\nModel performance:")
-            for name, score in sorted(model_perf_dict.items(), key=lambda x: x[1]):
-                print(f"  {name}: {score:.4f}")
-        
-        # Calculate model weights (lower Brier score = higher weight)
-        model_weights = {}
-        for name, score in model_perf_dict.items():
-            model_weights[name] = 1.0 / (score + 1e-8)
-        
-        # Normalize weights to sum to 1
-        total_weight = sum(model_weights.values())
-        for name in model_weights:
-            model_weights[name] /= total_weight
-        
-        if verbose:
-            print("\nModel weights for ensemble:")
-            for name, weight in sorted(model_weights.items(), key=lambda x: x[1], reverse=True):
-                print(f"  {name}: {weight:.4f}")
-        
-        meta_X_train = np.column_stack(val_preds)
-        meta_test = np.column_stack(test_preds)
-        
-        # Train meta-model
-        meta_model = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
-        if verbose:
-            print("Training final meta-model (Logistic Regression) on out-of-fold predictions")
-        meta_model.fit(meta_X_train, val_y)
-        final_meta_brier = brier_score_loss(val_y, meta_model.predict_proba(meta_X_train)[:, 1])
-        if verbose:
-            print(f"Out-of-fold meta-model Brier score: {final_meta_brier:.4f}")
-            print("Final meta-model coefficients:")
-            for i, coef in enumerate(meta_model.coef_[0]):
-                model_name = get_base_models()[i].__class__.__name__
+            print(f"  Current fold temporary meta-model Brier score: {fold_brier:.4f}")
+    
+    # Aggregate out-of-fold meta features and labels if any fold was processed
+    if len(meta_features_all) == 0:
+        print("Warning: No valid folds were processed in time-series CV. Using default prediction 0.5.")
+        return np.full(X_test.shape[0], 0.5)
+    
+    meta_X_train = np.vstack(meta_features_all)
+    meta_y_train = np.concatenate(meta_labels_all)
+    # Average test meta features across folds
+    meta_test = np.mean(np.array(test_meta_features_all), axis=0)
+    
+    # Calculate average model performance across folds
+    avg_model_performance = {}
+    for fold_performances in model_performances:
+        for idx, name, score in fold_performances:
+            if name not in avg_model_performance:
+                avg_model_performance[name] = []
+            avg_model_performance[name].append(score)
+    
+    # Calculate average Brier score for each model
+    for name, scores in avg_model_performance.items():
+        avg_model_performance[name] = np.mean(scores)
+    
+    if verbose:
+        print("\nAverage model performance across folds:")
+        for name, avg_score in sorted(avg_model_performance.items(), key=lambda x: x[1]):
+            print(f"  {name}: {avg_score:.4f}")
+    
+    # Use weighted meta-model based on model performance
+    # Convert Brier scores to weights (lower Brier score = higher weight)
+    model_weights = {}
+    for name, score in avg_model_performance.items():
+        # Invert and normalize the Brier score (lower is better)
+        model_weights[name] = 1.0 / (score + 1e-8)
+    
+    # Normalize weights to sum to 1
+    total_weight = sum(model_weights.values())
+    for name in model_weights:
+        model_weights[name] /= total_weight
+    
+    if verbose:
+        print("\nModel weights for ensemble:")
+        for name, weight in sorted(model_weights.items(), key=lambda x: x[1], reverse=True):
+            print(f"  {name}: {weight:.4f}")
+    
+    # Train final meta-model on full out-of-fold predictions
+    meta_model = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
+    if verbose:
+        print("Training final meta-model (Logistic Regression) on out-of-fold predictions")
+    meta_model.fit(meta_X_train, meta_y_train)
+    final_meta_brier = brier_score_loss(meta_y_train, meta_model.predict_proba(meta_X_train)[:, 1])
+    if verbose:
+        print(f"Out-of-fold meta-model Brier score: {final_meta_brier:.4f}")
+        print("Final meta-model coefficients:")
+        models_to_display = get_base_models() if not use_extended_models else get_extended_models()
+        for i, coef in enumerate(meta_model.coef_[0]):
+            if i < len(models_to_display):
+                model_name = models_to_display[i].__class__.__name__
                 print(f"    {model_name}: {coef:.4f}")
-        
-        # Predict using meta-model
-        test_pred_ensemble = meta_model.predict_proba(meta_test)[:, 1]
-        
-        # Create weighted average prediction
-        weighted_test_pred = np.zeros(meta_test.shape[0])
-        for i, model in enumerate(get_base_models()):
+            else:
+                print(f"    Model_{i}: {coef:.4f}")
+    
+    # Predict test set using final meta-model
+    test_pred_ensemble = meta_model.predict_proba(meta_test)[:, 1]
+    
+    # Also create a weighted average prediction based on model performance
+    weighted_test_pred = np.zeros(meta_test.shape[0])
+    models_for_weights = get_base_models() if not use_extended_models else get_extended_models()
+    for i, model in enumerate(models_for_weights):
+        if i < meta_test.shape[1]:  # Make sure we don't exceed the number of columns
             model_name = model.__class__.__name__
             if model_name in model_weights:
                 weighted_test_pred += meta_test[:, i] * model_weights[model_name]
-        
-        # Blend the meta-model prediction with the weighted average (70% meta-model, 30% weighted average)
-        final_blend_pred = 0.7 * test_pred_ensemble + 0.3 * weighted_test_pred
-        test_pred_ensemble = final_blend_pred
+    
+    # Blend the meta-model prediction with the weighted average (70% meta-model, 30% weighted average)
+    final_blend_pred = 0.7 * test_pred_ensemble + 0.3 * weighted_test_pred
+    test_pred_ensemble = final_blend_pred
     
     if len(cv_scores) > 0:
         print(f"\n[Stacking] Average temporary fold Brier Score: {np.mean(cv_scores):.4f}")

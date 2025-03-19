@@ -76,8 +76,9 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     # Step 1: Load data
     season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year, stage, test_mode)
     
-    # Load KenPom external data
-    kenpom_df = data_loader.load_kenpom_data(data_path, teams)
+    # Create an empty DataFrame instead of loading KenPom data
+    kenpom_df = pd.DataFrame()
+    print("KenPom data loading has been disabled.")
     
     # Step 2: Merge and prepare games data
     games = data_loader.merge_and_prepare_games(season_detail, tourney_detail)
@@ -105,15 +106,8 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     games = feature_engineering.add_historical_tournament_performance(games, seed_dict)
     
     # --- Merge KenPom features into training data ---
-    try:
-        if not kenpom_df.empty:
-            print("Merging KenPom features...")
-            games = feature_engineering.enhance_kenpom_features(games, kenpom_df)
-        else:
-            print("KenPom data is empty. Skipping KenPom feature merge.")
-    except Exception as e:
-        print(f"Error merging KenPom features: {e}")
-        print("Continuing without KenPom features...")
+    # KenPom feature merging disabled
+    print("KenPom feature merging has been disabled.")
     
     # Add feature crosses after all other features have been calculated
     print("Adding feature interactions to improve predictive power...")
@@ -174,14 +168,8 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     submission_df = feature_engineering.add_historical_tournament_performance(submission_df, seed_dict)
     
     # Try to add KenPom features to submission data
-    try:
-        if not kenpom_df.empty:
-            print("Merging KenPom features to submission data...")
-            submission_df = feature_engineering.enhance_kenpom_features(submission_df, kenpom_df)
-        else:
-            print("KenPom data is empty. Skipping KenPom feature merge for submission.")
-    except Exception as e:
-        print(f"Error merging KenPom features to submission: {e}")
+    # KenPom feature merging for submission data disabled
+    print("KenPom feature merging for submission data has been disabled.")
     
     # Add feature interactions to submission data
     submission_df = feature_engineering.add_feature_crosses(submission_df)
@@ -196,12 +184,7 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         eval_data = feature_engineering.add_historical_tournament_performance(eval_data, seed_dict)
         
         # Try to add KenPom features to eval data
-        try:
-            if not kenpom_df.empty:
-                print("Merging KenPom features to evaluation data...")
-                eval_data = feature_engineering.enhance_kenpom_features(eval_data, kenpom_df)
-        except Exception as e:
-            print(f"Error merging KenPom features to evaluation data: {e}")
+        # KenPom feature merging for evaluation data disabled
         
         # Add feature interactions to evaluation data
         eval_data = feature_engineering.add_feature_crosses(eval_data)

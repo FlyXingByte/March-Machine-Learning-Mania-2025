@@ -2,6 +2,36 @@ import numpy as np
 import pandas as pd
 import re
 
+def get_gender_from_teamid(team_id):
+    """
+    Determine the gender of the team based on TeamID
+    
+    Args:
+        team_id: Team ID
+        
+    Returns:
+        'M' for men's teams (ID 1000-1999)
+        'W' for women's teams (ID 3000-3999)
+    """
+    try:
+        team_id = int(team_id) if team_id is not None else None
+        
+        if team_id is None:
+            return None
+        elif 1000 <= team_id < 2000:
+            return 'M'
+        elif 3000 <= team_id < 4000:
+            return 'W'
+        else:
+            # Handle unexpected team ID ranges
+            print(f"Warning: Team ID {team_id} outside expected ranges (1000-1999 for men, 3000-3999 for women)")
+            # Default to men's team for IDs below 3000, women's for IDs 3000+
+            return 'M' if team_id < 3000 else 'W'
+    except (ValueError, TypeError) as e:
+        # Handle conversion errors for non-integer team_id
+        print(f"Error determining gender for team_id '{team_id}': {e}")
+        return None
+
 def feature_engineering(games, seed_dict):
     """
     Basic feature engineering:
@@ -28,6 +58,28 @@ def feature_engineering(games, seed_dict):
     games['Team2'] = games.apply(lambda r: sorted([r['WTeamID'], r['LTeamID']])[1], axis=1)
     games['IDTeam1'] = games.apply(lambda r: '_'.join([str(r['Season']), str(r['Team1'])]), axis=1)
     games['IDTeam2'] = games.apply(lambda r: '_'.join([str(r['Season']), str(r['Team2'])]), axis=1)
+    
+    # Add gender features based on TeamID
+    games['Team1Gender'] = games['Team1'].apply(get_gender_from_teamid)
+    games['Team2Gender'] = games['Team2'].apply(get_gender_from_teamid)
+    
+    # Ensure the gender is the same for both teams (validation check)
+    gender_mismatch = games[games['Team1Gender'] != games['Team2Gender']]
+    if not gender_mismatch.empty:
+        print(f"Warning: {len(gender_mismatch)} games have mismatched genders between teams.")
+        # For debugging purposes, show some examples
+        if len(gender_mismatch) > 0:
+            print("Sample of gender mismatches:")
+            print(gender_mismatch[['Season', 'Team1', 'Team2', 'Team1Gender', 'Team2Gender']].head(3))
+    
+    # Add a single gender column for the game (since both teams should have the same gender)
+    games['Gender'] = games['Team1Gender']
+    
+    # Convert string gender to numeric values (1 for men, 0 for women)
+    games['GenderCode'] = games['Gender'].map({'M': 1, 'W': 0}).fillna(0.5)  # Default 0.5 if unknown
+    
+    # Drop the string gender columns as they can't be used by the model directly
+    games = games.drop(columns=['Team1Gender', 'Team2Gender', 'Gender'])
     
     # Map seed values and calculate seed differences
     games['Team1Seed'] = games['IDTeam1'].map(seed_dict).fillna(16)
@@ -525,8 +577,11 @@ def add_feature_crosses(games):
     elo_features = ['EloDiff'] if 'EloDiff' in games.columns else []
     kenpom_features = ['AdjEM_Diff', 'AdjO_Diff', 'AdjD_Diff'] if 'AdjEM_Diff' in games.columns else []
     shooting_features = ['EFGPctDiff', 'TSPctDiff'] if 'EFGPctDiff' in games.columns and 'TSPctDiff' in games.columns else []
-    possession_features = ['OffRebRateDiff', 'TurnoverRateDiff'] if 'OffRebRateDiff' in games.columns and 'TurnoverRateDiff' in games.columns else []
+    possession_features = ['OffRebRateDiff'] if 'OffRebRateDiff' in games.columns else []
     momentum_features = ['RecentWinRateDiff', 'MomentumDiff'] if 'RecentWinRateDiff' in games.columns and 'MomentumDiff' in games.columns else []
+    
+    # Check if gender feature is available (now using GenderCode instead of Gender)
+    has_gender = 'GenderCode' in result.columns
     
     # Check if features are available and create crosses
     
@@ -536,6 +591,11 @@ def add_feature_crosses(games):
             if seed_feat in result.columns and elo_feat in result.columns:
                 result[f'{seed_feat}_x_{elo_feat}'] = result[seed_feat] * result[elo_feat]
                 print(f"  Created {seed_feat} × {elo_feat} interaction")
+                
+                # Add gender-specific interaction if gender is available
+                if has_gender:
+                    result[f'{seed_feat}_x_{elo_feat}_x_Gender'] = result[f'{seed_feat}_x_{elo_feat}'] * result['GenderCode']
+                    print(f"  Created {seed_feat} × {elo_feat} × Gender interaction")
     
     # 2. Seed × KenPom interactions
     for seed_feat in seed_features:
@@ -543,6 +603,11 @@ def add_feature_crosses(games):
             if seed_feat in result.columns and kp_feat in result.columns:
                 result[f'{seed_feat}_x_{kp_feat}'] = result[seed_feat] * result[kp_feat]
                 print(f"  Created {seed_feat} × {kp_feat} interaction")
+                
+                # Add gender-specific interaction if gender is available
+                if has_gender:
+                    result[f'{seed_feat}_x_{kp_feat}_x_Gender'] = result[f'{seed_feat}_x_{kp_feat}'] * result['GenderCode']
+                    print(f"  Created {seed_feat} × {kp_feat} × Gender interaction")
     
     # 3. Elo × KenPom interactions
     for elo_feat in elo_features:
@@ -550,6 +615,11 @@ def add_feature_crosses(games):
             if elo_feat in result.columns and kp_feat in result.columns:
                 result[f'{elo_feat}_x_{kp_feat}'] = result[elo_feat] * result[kp_feat]
                 print(f"  Created {elo_feat} × {kp_feat} interaction")
+                
+                # Add gender-specific interaction if gender is available
+                if has_gender:
+                    result[f'{elo_feat}_x_{kp_feat}_x_Gender'] = result[f'{elo_feat}_x_{kp_feat}'] * result['GenderCode']
+                    print(f"  Created {elo_feat} × {kp_feat} × Gender interaction")
     
     # 4. Shooting × Possession interactions (Four Factors interactions)
     for shoot_feat in shooting_features:
@@ -557,6 +627,11 @@ def add_feature_crosses(games):
             if shoot_feat in result.columns and poss_feat in result.columns:
                 result[f'{shoot_feat}_x_{poss_feat}'] = result[shoot_feat] * result[poss_feat]
                 print(f"  Created {shoot_feat} × {poss_feat} interaction")
+                
+                # Add gender-specific interaction if gender is available
+                if has_gender:
+                    result[f'{shoot_feat}_x_{poss_feat}_x_Gender'] = result[f'{shoot_feat}_x_{poss_feat}'] * result['GenderCode']
+                    print(f"  Created {shoot_feat} × {poss_feat} × Gender interaction")
     
     # 5. Recent performance × seed/elo interactions
     for momnt_feat in momentum_features:
@@ -564,11 +639,21 @@ def add_feature_crosses(games):
             if momnt_feat in result.columns and seed_feat in result.columns:
                 result[f'{momnt_feat}_x_{seed_feat}'] = result[momnt_feat] * result[seed_feat]
                 print(f"  Created {momnt_feat} × {seed_feat} interaction")
+                
+                # Add gender-specific interaction if gender is available
+                if has_gender:
+                    result[f'{momnt_feat}_x_{seed_feat}_x_Gender'] = result[f'{momnt_feat}_x_{seed_feat}'] * result['GenderCode']
+                    print(f"  Created {momnt_feat} × {seed_feat} × Gender interaction")
         
         for elo_feat in elo_features:
             if momnt_feat in result.columns and elo_feat in result.columns:
                 result[f'{momnt_feat}_x_{elo_feat}'] = result[momnt_feat] * result[elo_feat]
                 print(f"  Created {momnt_feat} × {elo_feat} interaction")
+                
+                # Add gender-specific interaction if gender is available
+                if has_gender:
+                    result[f'{momnt_feat}_x_{elo_feat}_x_Gender'] = result[f'{momnt_feat}_x_{elo_feat}'] * result['GenderCode']
+                    print(f"  Created {momnt_feat} × {elo_feat} × Gender interaction")
     
     # 6. Create higher-order terms for key differentials
     key_diffs = ['SeedDiff', 'EloDiff', 'AdjEM_Diff', 'ChampionComposite']
@@ -577,6 +662,11 @@ def add_feature_crosses(games):
             # Square term (quadratic effect)
             result[f'{feat}_squared'] = result[feat] ** 2
             print(f"  Created {feat}² squared term")
+            
+            # Add gender-specific squared terms if gender is available
+            if has_gender:
+                result[f'{feat}_squared_x_Gender'] = result[f'{feat}_squared'] * result['GenderCode']
+                print(f"  Created {feat}² × Gender interaction")
     
     # Create a feature category that amplifies underdog advantage when present
     if 'SeedDiff' in result.columns and 'EloDiff' in result.columns:
@@ -589,18 +679,27 @@ def add_feature_crosses(games):
             0
         )
         print("  Created UnderdogAdvantage feature")
+        
+        # Add gender-specific underdog advantage if gender is available
+        if has_gender:
+            result['UnderdogAdvantage_x_Gender'] = result['UnderdogAdvantage'] * result['GenderCode']
+            print("  Created UnderdogAdvantage × Gender interaction")
     
     # Championship potential composite
-    if all(feat in result.columns for feat in ['EFGPctDiff', 'TSPctDiff', 'OffRebRateDiff', 'DefRebRateDiff', 'TurnoverRateDiff']):
+    if all(feat in result.columns for feat in ['EFGPctDiff', 'TSPctDiff', 'OffRebRateDiff', 'DefRebRateDiff']):
         # Formula based on championship team profiles
         result['ChampionshipPotential'] = (
-            0.30 * result['EFGPctDiff'] + 
-            0.20 * result['TSPctDiff'] +
-            0.15 * result['OffRebRateDiff'] + 
-            0.15 * result['DefRebRateDiff'] +
-            0.20 * -result['TurnoverRateDiff']  # Negative because lower TO is better
+            0.35 * result['EFGPctDiff'] + 
+            0.25 * result['TSPctDiff'] +
+            0.20 * result['OffRebRateDiff'] + 
+            0.20 * result['DefRebRateDiff']
         )
         print("  Created ChampionshipPotential combined feature")
+        
+        # Add gender-specific championship potential if gender is available
+        if has_gender:
+            result['ChampionshipPotential_x_Gender'] = result['ChampionshipPotential'] * result['GenderCode']
+            print("  Created ChampionshipPotential × Gender interaction")
     
     print(f"Added {sum(1 for col in result.columns if '_x_' in col or '_squared' in col or col in ['UnderdogAdvantage', 'ChampionshipPotential'])} feature crosses")
     return result
@@ -643,12 +742,16 @@ def aggregate_features(games):
     regular_games['SeasonIDTeams'] = regular_games.apply(lambda r: f"{r['Season']}_{r['IDTeams']}", axis=1)
     
     agg_funcs = ['mean', 'median', 'std']
-    gb = regular_games.groupby('SeasonIDTeams').agg({col: agg_funcs for col in available_cols}).reset_index()
+    
+    # Sort index first to avoid PerformanceWarning
+    regular_games_sorted = regular_games.sort_values('SeasonIDTeams')
+    gb = regular_games_sorted.groupby('SeasonIDTeams').agg({col: agg_funcs for col in available_cols}).reset_index()
     
     # Split SeasonIDTeams back into Season and IDTeams
     gb[['Season', 'IDTeams']] = gb['SeasonIDTeams'].str.split('_', n=1, expand=True)
+    gb = gb.sort_index()
     gb = gb.drop(columns=['SeasonIDTeams'])
-    
+
     # Rename columns while keeping 'Season' and 'IDTeams' intact
     new_columns = []
     for col in gb.columns:
@@ -695,6 +798,28 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     submission_df['IDTeams'] = submission_df.apply(lambda r: f"{r['Team1']}_{r['Team2']}", axis=1)
     submission_df['IDTeam1'] = submission_df.apply(lambda r: f"{r['Season']}_{r['Team1']}", axis=1)
     submission_df['IDTeam2'] = submission_df.apply(lambda r: f"{r['Season']}_{r['Team2']}", axis=1)
+    
+    # Add gender features based on TeamID
+    submission_df['Team1Gender'] = submission_df['Team1'].apply(get_gender_from_teamid)
+    submission_df['Team2Gender'] = submission_df['Team2'].apply(get_gender_from_teamid)
+    
+    # Ensure the gender is the same for both teams (validation check)
+    gender_mismatch = submission_df[submission_df['Team1Gender'] != submission_df['Team2Gender']]
+    if not gender_mismatch.empty:
+        print(f"Warning: {len(gender_mismatch)} submission games have mismatched genders between teams.")
+        # For debugging purposes, show some examples
+        if len(gender_mismatch) > 0:
+            print("Sample of gender mismatches in submission data:")
+            print(gender_mismatch[['Season', 'Team1', 'Team2', 'Team1Gender', 'Team2Gender']].head(3))
+    
+    # Add a single gender column for the game (since both teams should have the same gender)
+    submission_df['Gender'] = submission_df['Team1Gender']
+    
+    # Convert string gender to numeric values (1 for men, 0 for women)
+    submission_df['GenderCode'] = submission_df['Gender'].map({'M': 1, 'W': 0}).fillna(0.5)  # Default 0.5 if unknown
+    
+    # Drop the string gender columns as they can't be used by the model directly
+    submission_df = submission_df.drop(columns=['Team1Gender', 'Team2Gender', 'Gender'])
     
     # Seed features
     submission_df['Team1Seed'] = submission_df['IDTeam1'].map(seed_dict).fillna(16)
@@ -1762,13 +1887,9 @@ def enhance_key_stat_differentials(games):
     
     # Default critical indicators to ensure they exist
     critical_indicators = [
-        'EFGPctDiff',      # Effective FG% difference
-        'TurnoverRateDiff', # Turnover rate difference
         'OffRebRateDiff',   # Offensive rebounding rate difference
-        'TotalRebRateDiff', # Total rebounding rate difference
         'FTRateDiff',       # Free throw rate difference 
-        'FTPctDiff',        # Free throw percentage difference
-        'TSPctDiff',        # True shooting percentage difference
+        'FTPctDiff'         # Free throw percentage difference
     ]
     
     # If we don't have the necessary stats, set default values and return
@@ -1785,17 +1906,15 @@ def enhance_key_stat_differentials(games):
         # Create a composite champion indicator with default values if it doesn't exist
         if 'ChampionComposite' not in result.columns:
             # Create a basic composite score using whatever indicators we do have
-            if 'EFGPctDiff' in result.columns and 'TurnoverRateDiff' in result.columns:
+            if 'OffRebRateDiff' in result.columns and 'FTRateDiff' in result.columns:
                 result['ChampionComposite'] = (
-                    0.4 * result['EFGPctDiff'] + 
-                    0.25 * -result['TurnoverRateDiff']  # Negative because lower TO is better
+                    0.4 * result['OffRebRateDiff'] + 
+                    0.25 * -result['FTRateDiff']  # Negative because lower OR is better
                 )
                 
                 # Add more components if available
-                if 'OffRebRateDiff' in result.columns:
-                    result['ChampionComposite'] += 0.20 * result['OffRebRateDiff']
-                if 'FTRateDiff' in result.columns:
-                    result['ChampionComposite'] += 0.15 * result['FTRateDiff']
+                if 'FTPctDiff' in result.columns:
+                    result['ChampionComposite'] += 0.15 * result['FTPctDiff']
             else:
                 # Default value if we can't calculate
                 result['ChampionComposite'] = 0.0
@@ -2074,25 +2193,13 @@ def enhance_key_stat_differentials(games):
         result['TotalRebRateDiff'] = result['Team1_TotalRebRate'] - result['Team2_TotalRebRate']
     
     # Add turnover features
-    if team_turnover_stats:
-        # Team1 turnover features
-        result['Team1_TORate'] = result[team1_key].map(lambda x: team_turnover_stats.get(x, {}).get('to_rate', 0.15))
-        
-        # Team2 turnover features
-        result['Team2_TORate'] = result[team2_key].map(lambda x: team_turnover_stats.get(x, {}).get('to_rate', 0.15))
-        
-        # Calculate turnover differential
-        result['TurnoverRateDiff'] = result['Team1_TORate'] - result['Team2_TORate']
+    # Turnover features disabled
     
     # Ensure we have all the critical champion indicators
     critical_indicators = [
-        'EFGPctDiff',      # Effective FG% difference
-        'TurnoverRateDiff', # Turnover rate difference
         'OffRebRateDiff',   # Offensive rebounding rate difference
         'FTRateDiff',       # Free throw rate difference 
-        'FTPctDiff',        # Free throw percentage difference
-        'TSPctDiff',        # True shooting percentage difference
-        'TotalRebRateDiff'  # Total rebounding rate difference
+        'FTPctDiff'         # Free throw percentage difference
     ]
     
     # Check which indicators we're missing and initialize them if needed
@@ -2103,29 +2210,32 @@ def enhance_key_stat_differentials(games):
     
     # Create a composite champion indicator based on these factors
     # This combines the 'Four Factors' indicators with some weighting
-    # Weights based on research that shows eFG% is most important, followed by turnover rate, etc.
+    # Weights based on research that shows eFG% is most important, followed by offensive rebounding, etc.
     result['ChampionComposite'] = (
-        0.4 * result['EFGPctDiff'] +           # 40% weight to shooting efficiency
-        0.25 * -result['TurnoverRateDiff'] +   # 25% weight to not turning it over (negative because lower is better)
-        0.20 * result['OffRebRateDiff'] +      # 20% weight to offensive rebounding
-        0.15 * result['FTRateDiff']            # 15% weight to getting to the line
+        0.5 * result['OffRebRateDiff'] +           # 50% weight to shooting efficiency
+        0.30 * result['FTRateDiff'] +      # 30% weight to getting to the line
+        0.20 * result['FTPctDiff']            # 20% weight to free throw rate
     )
     
-    # Create an alternative composite that includes TS% and total rebounding
-    result['ChampionCompositeV2'] = (
-        0.35 * result['TSPctDiff'] +           # 35% weight to true shooting
-        0.25 * -result['TurnoverRateDiff'] +   # 25% weight to turnovers
-        0.20 * result['TotalRebRateDiff'] +    # 20% weight to total rebounding
-        0.10 * result['OffRebRateDiff'] +      # 10% additional weight to offensive boards
-        0.10 * result['FTRateDiff']            # 10% weight to free throw rate
-    )
+    # Create enhanced versions of the champion composite indicator
+    if all(feat in result.columns for feat in ['TSPctDiff', 'TotalRebRateDiff', 'OffRebRateDiff', 'FTRateDiff']):
+        # Create an enhanced champion composite score with updated weights
+        result['ChampionCompositeV2'] = (
+            0.40 * result['TSPctDiff'] +           # 40% weight to true shooting
+            0.30 * result['TotalRebRateDiff'] +    # 30% weight to total rebounding
+            0.20 * result['OffRebRateDiff'] +      # 20% additional weight to offensive boards
+            0.10 * result['FTRateDiff']            # 10% weight to free throw rate
+        )
     
     print("关键冠军指标增强完成，添加了以下新指标:")
     print("  - 有效投篮命中率差异 (EFGPctDiff)")
     print("  - 真实命中率差异 (TSPctDiff)")
     print("  - 罚球率及命中率差异 (FTRateDiff, FTPctDiff)")
     print("  - 进攻篮板率、防守篮板率及总篮板率差异")
-    print("  - 失误率差异 (TurnoverRateDiff)")
     print("  - 冠军综合指标 (ChampionComposite, ChampionCompositeV2)")
+    
+    # Create an overall 'Four Factors' composite metric if all required metrics are available
+    if all(feat in result.columns for feat in ['EFGPctDiff', 'TSPctDiff', 'OffRebRateDiff', 'DefRebRateDiff']):
+        print("  所有关键指标可用，创建综合'四因素'指标...")
     
     return result

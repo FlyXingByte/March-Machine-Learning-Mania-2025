@@ -163,7 +163,21 @@ def prepare_dataset(games, submission_df, extract_agg_features=True):
                     'Pred']  # Removed 'Season' from exclude_cols
                              # DO NOT exclude 'original_index' and 'original_ID'
     
-    features = [c for c in games.columns if c not in exclude_cols and c in submission_df.columns] if submission_df is not None else [c for c in games.columns if c not in exclude_cols]
+    # Print columns that are in both dataframes for debugging
+    if submission_df is not None:
+        common_columns = set(games.columns) & set(submission_df.columns)
+        print(f"Common columns count: {len(common_columns)}")
+        print(f"Sample common columns: {list(common_columns)[:5]}")
+    
+    # Make sure both dataframes have the same GenderCode column if present
+    if 'GenderCode' in games.columns:
+        print("GenderCode column found in training data")
+    
+    if submission_df is not None and 'GenderCode' in submission_df.columns:
+        print("GenderCode column found in submission data")
+    
+    # Get common features that are present in both dataframes
+    features = [c for c in games.columns if c not in exclude_cols and (submission_df is None or c in submission_df.columns)]
     
     if submission_df is not None:
         print(f"Using {len(features)} features for training, sample features: {features[:5]}")
@@ -207,6 +221,24 @@ def prepare_dataset(games, submission_df, extract_agg_features=True):
         else:
             X_train = games[features].fillna(0)
             X_sub = submission_df[features].fillna(0) if submission_df is not None else None
+    
+    # Print shape information for debugging
+    print(f"Training features shape: {X_train.shape}")
+    if X_sub is not None:
+        print(f"Submission features shape: {X_sub.shape}")
+    
+    # Verify both datasets have the same number of columns (except tracking columns)
+    if X_sub is not None:
+        train_cols = set(X_train.columns)
+        sub_cols = set(X_sub.columns) - set(tracking_cols)
+        missing_in_train = sub_cols - train_cols
+        missing_in_sub = train_cols - sub_cols
+        
+        if missing_in_train:
+            print(f"WARNING: {len(missing_in_train)} columns in submission data missing in training data: {missing_in_train}")
+        
+        if missing_in_sub:
+            print(f"WARNING: {len(missing_in_sub)} columns in training data missing in submission data: {missing_in_sub}")
     
     y_train = games['WinA']
     
