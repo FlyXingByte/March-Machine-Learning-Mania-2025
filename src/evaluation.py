@@ -4,46 +4,46 @@ import os
 
 def generate_submission(submission_df, test_pred, output_file='submission.csv'):
     """
-    生成带有预测的最终提交文件
+    Generate final submission file with predictions
     
-    参数:
-        submission_df: 具有提交格式的DataFrame
-        test_pred: 预测数组
-        output_file: 输出提交的文件名
+    Parameters:
+        submission_df: DataFrame with submission format
+        test_pred: Array of predictions
+        output_file: Output filename for submission
         
-    返回:
-        包含ID和预测的DataFrame
+    Returns:
+        DataFrame containing ID and predictions
     """
-    # 检查是否有跟踪列
+    # Check if tracking columns exist
     has_tracking = 'original_index' in submission_df.columns and 'original_ID' in submission_df.columns
     
     if has_tracking:
-        # 创建一个包含原始ID和预测的新DataFrame
-        # 按原始索引排序以确保正确顺序
+        # Create a new DataFrame with original IDs and predictions
+        # Sort by original index to ensure correct order
         if len(test_pred) != len(submission_df):
-            print(f"警告：预测计数({len(test_pred)})与提交DataFrame大小({len(submission_df)})不匹配")
+            print(f"Warning: Prediction count ({len(test_pred)}) does not match submission DataFrame size ({len(submission_df)})")
             
-        # 创建包含索引和预测的临时DataFrame
+        # Create temporary DataFrame with index and predictions
         temp_df = pd.DataFrame({
             'original_index': submission_df['original_index'],
             'Pred': test_pred
         })
-        # 按原始索引排序
+        # Sort by original index
         temp_df = temp_df.sort_values('original_index')
         
-        # 创建具有排序预测的最终提交
+        # Create final submission with sorted predictions
         final_submission = pd.DataFrame({
             'ID': submission_df.sort_values('original_index')['original_ID'].values,
             'Pred': temp_df['Pred'].values
         })
         
-        print(f"使用带跟踪列的直接对齐创建了包含{len(final_submission)}行的提交")
+        print(f"Created submission with {len(final_submission)} rows using tracking columns")
     else:
-        # 如果跟踪列不可用，则回退到原始修复方法
-        print("警告：未找到跟踪列。使用后备对齐方法。")
+        # If tracking columns are not available, use fallback alignment method
+        print("Warning: Tracking columns not found. Using fallback alignment method.")
         final_submission = fix_submission_format(submission_df, test_pred)
     
-    # 保存到文件
+    # Save to file
     final_submission.to_csv(output_file, index=False)
     
     print_submission_stats(final_submission)

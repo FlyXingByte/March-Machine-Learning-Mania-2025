@@ -4,14 +4,14 @@ import re
 
 def get_gender_from_teamid(team_id):
     """
-    根据TeamID确定球队性别
+    Determine team gender based on TeamID
     
-    参数:
-        team_id: 球队ID
+    Parameters:
+        team_id: Team ID
         
-    返回:
-        'M'表示男子球队（ID 1000-1999）
-        'W'表示女子球队（ID 3000-3999）
+    Returns:
+        'M' for men's teams (ID 1000-1999)
+        'W' for women's teams (ID 3000-3999)
     """
     try:
         team_id = int(team_id) if team_id is not None else None
@@ -23,32 +23,32 @@ def get_gender_from_teamid(team_id):
         elif 3000 <= team_id < 4000:
             return 'W'
         else:
-            # 处理超出预期范围的球队ID
-            print(f"警告：球队ID {team_id} 超出预期范围（男子1000-1999，女子3000-3999）")
-            # 对于3000以下的ID默认为男子球队，3000+默认为女子球队
+            # Handle team IDs outside expected range
+            print(f"Warning: Team ID {team_id} outside expected range (men 1000-1999, women 3000-3999)")
+            # Default to men's teams for IDs below 3000, women's teams for 3000+
             return 'M' if team_id < 3000 else 'W'
     except (ValueError, TypeError) as e:
-        # 处理非整数team_id的转换错误
-        print(f"确定球队ID '{team_id}' 性别时出错: {e}")
+        # Handle conversion errors for non-integer team_ids
+        print(f"Error determining gender for team ID '{team_id}': {e}")
         return None
 
 def feature_engineering(games, seed_dict):
     """
-    基础特征工程:
-    - 生成比赛ID并对球队排序
-    - 映射种子值并计算种子差异和强度
-    - 生成目标变量
+    Basic feature engineering:
+    - Generate game IDs and sort teams
+    - Map seed values and calculate seed differences and strength
+    - Generate target variable
     
-    参数:
-        games: 包含比赛数据的DataFrame
-        seed_dict: 将Season_TeamID映射到种子值的字典
+    Parameters:
+        games: DataFrame with game data
+        seed_dict: Dictionary mapping Season_TeamID to seed value
         
-    返回:
-        带有工程特征的DataFrame
+    Returns:
+        DataFrame with engineered features
     """
-    print("执行基础特征工程...")
+    print("Executing basic feature engineering...")
     
-    # 生成比赛标识符和球队顺序（按TeamID排序）
+    # Generate game identifiers and sort teams by TeamID
     games['ID'] = games.apply(lambda r: '_'.join([str(r['Season'])] +
                                                  list(map(str, sorted([r['WTeamID'], r['LTeamID']])))),
                               axis=1)
@@ -59,39 +59,39 @@ def feature_engineering(games, seed_dict):
     games['IDTeam1'] = games.apply(lambda r: '_'.join([str(r['Season']), str(r['Team1'])]), axis=1)
     games['IDTeam2'] = games.apply(lambda r: '_'.join([str(r['Season']), str(r['Team2'])]), axis=1)
     
-    # 根据TeamID添加性别特征
+    # Add gender features based on TeamID
     games['Team1Gender'] = games['Team1'].apply(get_gender_from_teamid)
     games['Team2Gender'] = games['Team2'].apply(get_gender_from_teamid)
     
-    # 确保两支球队的性别相同（验证检查）
+    # Ensure both teams have the same gender (validation check)
     gender_mismatch = games[games['Team1Gender'] != games['Team2Gender']]
     if not gender_mismatch.empty:
-        print(f"警告：{len(gender_mismatch)}场比赛的球队之间存在性别不匹配。")
-        # 出于调试目的，显示一些示例
+        print(f"Warning: {len(gender_mismatch)} games have mismatched genders between teams.")
+        # For debugging purposes, display some examples
         if len(gender_mismatch) > 0:
-            print("性别不匹配的样本：")
+            print("Sample of gender mismatches in game data:")
             print(gender_mismatch[['Season', 'Team1', 'Team2', 'Team1Gender', 'Team2Gender']].head(3))
     
-    # 为比赛添加单一性别列（因为两支球队应该具有相同的性别）
+    # Add a single gender column for the game (since both teams should have the same gender)
     games['Gender'] = games['Team1Gender']
     
-    # 将字符串性别转换为数值（男子为1，女子为0）
-    games['GenderCode'] = games['Gender'].map({'M': 1, 'W': 0}).fillna(0.5)  # 未知时默认0.5
+    # Convert string gender to numeric values (1 for men, 0 for women)
+    games['GenderCode'] = games['Gender'].map({'M': 1, 'W': 0}).fillna(0.5)  # Default 0.5 if unknown
     
-    # 删除字符串性别列，因为它们不能被模型直接使用
+    # Drop the string gender columns as they can't be used directly by the model
     games = games.drop(columns=['Team1Gender', 'Team2Gender', 'Gender'])
     
-    # 映射种子值并计算种子差异
+    # Map seed values and calculate seed differences
     games['Team1Seed'] = games['IDTeam1'].map(seed_dict).fillna(16)
     games['Team2Seed'] = games['IDTeam2'].map(seed_dict).fillna(16)
     games['SeedDiff'] = games['Team1Seed'] - games['Team2Seed']
     
-    # 种子强度特征（指数衰减）
+    # Seed strength features (exponential decay)
     games['Team1SeedStrength'] = np.exp(-games['Team1Seed'] / 4)
     games['Team2SeedStrength'] = np.exp(-games['Team2Seed'] / 4)
     games['SeedStrengthDiff'] = games['Team1SeedStrength'] - games['Team2SeedStrength']
     
-    # 生成目标变量WinA（如果Team1获胜则为1，否则为0）
+    # Generate target variable (WinA): 1 if Team1 wins, 0 otherwise
     games['WinA'] = games.apply(lambda r: 1 if sorted([r['WTeamID'], r['LTeamID']])[0] == r['WTeamID'] else 0, axis=1)
     
     if 'WScore' in games.columns and 'LScore' in games.columns:
@@ -714,20 +714,20 @@ def aggregate_features(games):
     Returns:
         DataFrame with aggregated features
     """
-    print("聚合团队对阵统计特征（仅使用常规赛数据，避免数据泄露）...")
+    print("Aggregating team matchup statistics (using regular season data only, to avoid data leakage)...")
     
     # Check for GameType column
     if 'GameType' not in games.columns:
-        print("警告: GameType列未找到，无法区分常规赛和锦标赛。假设所有数据都是常规赛。")
+        print("Warning: GameType column not found, cannot distinguish between regular season and tournament. Assuming all data is regular season.")
         regular_games = games.copy()
     else:
         # Use only regular season games for aggregation
         regular_games = games[games['GameType'] == 'Regular'].copy()
         if regular_games.empty:
-            print("警告: 没有找到常规赛数据，使用所有数据进行聚合。")
+            print("Warning: No regular season data found, using all data for team statistics...")
             regular_games = games.copy()
         else:
-            print(f"使用 {len(regular_games)} 场常规赛比赛进行特征聚合（总共 {len(games)} 场比赛）")
+            print(f"Using {len(regular_games)} regular season games for feature aggregation (total {len(games)} games)")
     
     available_cols = [col for col in ['NumOT', 'WFGM', 'WFGA', 'WFGM3', 'WFGA3', 'WFTM', 'WFTA', 'WOR',
                                      'WDR', 'WAst', 'WTO', 'WStl', 'WBlk', 'WPF', 'LFGM', 'LFGA',
@@ -735,7 +735,7 @@ def aggregate_features(games):
                                      'LStl', 'LBlk', 'LPF'] if col in regular_games.columns]
     
     if not available_cols:
-        print("警告: 没有找到可用的统计列进行聚合。")
+        print("Warning: No usable statistical columns found for aggregation.")
         return pd.DataFrame(columns=['IDTeams_c_score'])
     
     # Group by Season and team pair. Construct a key 'SeasonIDTeams'
@@ -765,7 +765,7 @@ def aggregate_features(games):
             new_columns.append(col)
     gb.columns = new_columns
     
-    print(f"聚合特征计算完成，共生成 {len(gb)} 个赛季-团队对组合的特征")
+    print(f"Feature aggregation calculation complete, generated {len(gb)} team-season combinations")
     
     return gb
 
@@ -783,7 +783,7 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     Returns:
         DataFrame with features for submission predictions
     """
-    print("为提交文件准备特征数据...")
+    print("Preparing feature data for submission...")
     
     # Create a deep copy and add an original index column to track row identity
     submission_df = submission_df.copy()
@@ -818,7 +818,7 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     # Convert string gender to numeric values (1 for men, 0 for women)
     submission_df['GenderCode'] = submission_df['Gender'].map({'M': 1, 'W': 0}).fillna(0.5)  # Default 0.5 if unknown
     
-    # Drop the string gender columns as they can't be used by the model directly
+    # Drop the string gender columns as they can't be used directly by the model
     submission_df = submission_df.drop(columns=['Team1Gender', 'Team2Gender', 'Gender'])
     
     # Seed features
@@ -905,7 +905,7 @@ def prepare_submission_features(submission_df, seed_dict, team_stats, extract_ga
     # Store original IDs for final alignment
     submission_df['original_ID'] = original_ids
     
-    print("提交文件特征准备完成")
+    print("Submission feature preparation complete")
     return submission_df
 
 def merge_kenpom_features(games, kenpom_df):
@@ -1326,7 +1326,7 @@ def add_strength_of_schedule(games, team_stats, current_season=None):
         result.loc[idx, 'SOS_DefRatingDiff'] = result.loc[idx, 'Team1_SOS_DefRating'] - result.loc[idx, 'Team2_SOS_DefRating']
         result.loc[idx, 'SOS_CombinedDiff'] = result.loc[idx, 'Team1_SOS_Combined'] - result.loc[idx, 'Team2_SOS_Combined']
     
-    print(f"赛程强度特征计算完成，共处理了 {len(sos_metrics)} 个团队-赛季组合")
+    print(f"SOS features calculation complete, processed {len(sos_metrics)} team-season combinations")
     return result
 
 def add_key_stat_differentials(games):
@@ -1519,7 +1519,7 @@ def add_key_stat_differentials(games):
         result['Team2_FTRate'] = result['Team2_FTA'] / result['Team2_FGA'].replace(0, 1)
         result['FTRateDiff'] = result['Team1_FTRate'] - result['Team2_FTRate']
     
-    print("关键统计差异特征计算完成")
+    print("Key statistical differential features calculation complete")
     return result
 
 def add_historical_tournament_performance(games, seed_dict, num_years=3):
@@ -1669,7 +1669,7 @@ def add_historical_tournament_performance(games, seed_dict, num_years=3):
     result['HistDeepestRunDiff'] = result['Team1_HistDeepestRun'] - result['Team2_HistDeepestRun']
     result['SeedTrendDiff'] = result['Team1_SeedTrend'] - result['Team2_SeedTrend']
     
-    print("历史锦标赛表现特征计算完成")
+    print("Historical tournament performance features calculation complete")
     return result
 
 def enhance_kenpom_features(games, kenpom_df):
@@ -1851,7 +1851,7 @@ def enhance_key_stat_differentials(games):
     Returns:
         DataFrame with additional key statistical differences
     """
-    print("增强关键统计差异特征，添加篮板率、失误率、有效命中率等冠军指标...")
+    print("Enhancing key statistical differential features, adding rebounding rate, turnover rate, effective field goal percentage, true shooting percentage, and free throw rate as champion indicators...")
     
     # Make a copy to avoid modifying the original DataFrame
     result = games.copy()
@@ -2205,12 +2205,12 @@ def enhance_key_stat_differentials(games):
             0.10 * result['FTRateDiff']            # 10% weight to free throw rate
         )
     
-    print("关键冠军指标增强完成，添加了以下新指标:")
-    print("  - 有效投篮命中率差异 (EFGPctDiff)")
-    print("  - 真实命中率差异 (TSPctDiff)")
-    print("  - 罚球率及命中率差异 (FTRateDiff, FTPctDiff)")
-    print("  - 进攻篮板率、防守篮板率及总篮板率差异")
-    print("  - 冠军综合指标 (ChampionComposite, ChampionCompositeV2)")
+    print("Key champion indicators enhanced, added the following new indicators:")
+    print("  - Effective field goal percentage difference (EFGPctDiff)")
+    print("  - True shooting percentage difference (TSPctDiff)")
+    print("  - Free throw rate and percentage difference (FTRateDiff, FTPctDiff)")
+    print("  - Offensive rebounding rate, defensive rebounding rate, and total rebounding rate difference")
+    print("  - Champion composite (ChampionComposite, ChampionCompositeV2)")
     
     # Create an overall 'Four Factors' composite metric if all required metrics are available
     if all(feat in result.columns for feat in ['EFGPctDiff', 'TSPctDiff', 'OffRebRateDiff', 'DefRebRateDiff']):

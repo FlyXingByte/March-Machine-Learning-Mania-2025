@@ -5,19 +5,19 @@ import re
 
 def load_data(data_path, start_year=2018, stage=2, test_mode=False):
     """
-    加载所有必要的数据文件
+    Load all necessary data files
     
-    参数:
-        data_path: 数据目录的路径
-        start_year: 只包含从该年份开始的赛季
-        stage: 比赛阶段 (1 或 2)
-        test_mode: 如为True，每年仅加载10场比赛进行快速测试
+    Parameters:
+        data_path: Path to the data directory
+        start_year: Only include seasons starting from this year
+        stage: Competition stage (1 or 2)
+        test_mode: If True, only load 10 games per year for quick testing
     
-    返回:
-        数据框元组 (season_detail, tourney_detail, seeds, teams, submission)
+    Returns:
+        Tuple of DataFrames (season_detail, tourney_detail, seeds, teams, submission)
     """
-    print(f"加载{start_year}年及以后的数据文件")
-    # 加载男子和女子常规赛和锦标赛详细数据
+    print(f"Loading data files from {start_year} and later")
+    # Load men's and women's regular season and tournament detailed data
     season_detail = pd.concat([
         pd.read_csv(os.path.join(data_path, "MRegularSeasonDetailedResults.csv")),
         pd.read_csv(os.path.join(data_path, "WRegularSeasonDetailedResults.csv"))
@@ -27,46 +27,46 @@ def load_data(data_path, start_year=2018, stage=2, test_mode=False):
         pd.read_csv(os.path.join(data_path, "WNCAATourneyDetailedResults.csv"))
     ], ignore_index=True)
     
-    # 筛选start_year之后的赛季数据
+    # Filter seasons data after start_year
     original_season_rows = len(season_detail)
     original_tourney_rows = len(tourney_detail)
     
     season_detail = season_detail[season_detail['Season'] >= start_year]
     tourney_detail = tourney_detail[tourney_detail['Season'] >= start_year]
     
-    print(f"常规赛数据：从{original_season_rows}行减少到{len(season_detail)}行")
-    print(f"锦标赛数据：从{original_tourney_rows}行减少到{len(tourney_detail)}行")
+    print(f"Regular season data: reduced from {original_season_rows} rows to {len(season_detail)} rows")
+    print(f"Tournament data: reduced from {original_tourney_rows} rows to {len(tourney_detail)} rows")
     
     seeds = pd.concat([
         pd.read_csv(os.path.join(data_path, "MNCAATourneySeeds.csv")),
         pd.read_csv(os.path.join(data_path, "WNCAATourneySeeds.csv"))
     ], ignore_index=True)
     
-    # 筛选种子数据
+    # Filter seeds data
     original_seeds_rows = len(seeds)
     seeds = seeds[seeds['Season'] >= start_year]
-    print(f"种子数据：从{original_seeds_rows}行减少到{len(seeds)}行")
+    print(f"Seeds data: reduced from {original_seeds_rows} rows to {len(seeds)} rows")
     
-    # 加载球队信息（合并 MTeams.csv 和 WTeams.csv）
+    # Load team information (combine MTeams.csv and WTeams.csv)
     teams = load_teams(data_path)
     
-    # 如果启用测试模式，每年只保留少量比赛样本进行快速测试
+    # If test mode, only keep a small number of games per year for quick testing
     if test_mode:
-        # 按赛季分组并每赛季抽样10场比赛用于常规赛
+        # Group by season and sample 10 games for regular season
         season_detail = season_detail.groupby('Season').apply(
             lambda x: x.sample(min(10, len(x)), random_state=42)
         ).reset_index(drop=True)
         
-        # 按赛季分组并每赛季抽样最多10场可用比赛用于锦标赛
+        # Group by season and sample up to 10 available games for tournament
         tourney_detail = tourney_detail.groupby('Season').apply(
             lambda x: x.sample(min(10, len(x)), random_state=42)
         ).reset_index(drop=True)
         
-        print(f"测试模式已启用：常规赛数据减少至{len(season_detail)}行")
-        print(f"测试模式已启用：锦标赛数据减少至{len(tourney_detail)}行")
+        print(f"Test mode enabled: Regular season data reduced to {len(season_detail)} rows")
+        print(f"Test mode enabled: Tournament data reduced to {len(tourney_detail)} rows")
     
-    # 根据阶段加载适当的提交文件
-    # 使用不带"M"前缀的正确文件名
+    # Load appropriate submission file based on stage
+    # Use correct file name without "M" prefix
     try:
         if stage == 1:
             submission_path = os.path.join(data_path, "SampleSubmissionStage1.csv")
@@ -74,44 +74,44 @@ def load_data(data_path, start_year=2018, stage=2, test_mode=False):
         else:
             submission_path = os.path.join(data_path, "SampleSubmissionStage2.csv")
             submission = pd.read_csv(submission_path)
-        print(f"成功加载提交文件：{submission_path}")
+        print(f"Successfully loaded submission file: {submission_path}")
     except FileNotFoundError:
-        print(f"错误：在{submission_path}找不到提交文件")
-        print("创建一个空的提交DataFrame作为后备")
-        # 创建一个空的提交dataframe作为后备
+        print(f"Error: Submission file not found at {submission_path}")
+        print("Creating an empty submission DataFrame as backup")
+        # Create an empty submission DataFrame as backup
         submission = pd.DataFrame(columns=['ID', 'Pred'])
         
     return season_detail, tourney_detail, seeds, teams, submission
 
 def load_teams(data_path):
     """
-    加载并合并男子和女子球队信息。
+    Load and combine men's and women's team information.
     
-    参数:
-        data_path: 数据目录的路径。
+    Parameters:
+        data_path: Path to the data directory.
         
-    返回:
-        teams: 合并后的DataFrame，包含'TeamID'和'TeamName'列
+    Returns:
+        teams: Combined DataFrame containing 'TeamID' and 'TeamName' columns
     """
     try:
         mteams = pd.read_csv(os.path.join(data_path, "MTeams.csv"))
         wteams = pd.read_csv(os.path.join(data_path, "WTeams.csv"))
         teams = pd.concat([mteams, wteams], ignore_index=True)
-        print(f"从MTeams和WTeams加载了{len(teams)}支球队。")
+        print(f"Loaded {len(teams)} teams from MTeams and WTeams.")
     except Exception as e:
-        print("加载球队数据时出错:", e)
+        print("Error loading team data:", e)
         teams = pd.DataFrame()
     return teams
 
 def prepare_seed_dict(seeds_df):
     """
-    创建一个字典，其中键是"Season_TeamID"，值是种子号码
+    Create a dictionary where the key is "Season_TeamID" and the value is seed number
 
-    参数:
-        seeds_df: 包含种子信息的DataFrame
+    Parameters:
+        seeds_df: DataFrame containing seed information
 
-    返回:
-        将Season_TeamID映射到种子值的字典
+    Returns:
+        Dictionary mapping Season_TeamID to seed value
     """
     seed_dict = {
         '_'.join([str(int(row['Season'])), str(int(row['TeamID']))]): int(row['Seed'][1:3])
@@ -121,13 +121,13 @@ def prepare_seed_dict(seeds_df):
 
 def extract_game_info(id_str):
     """
-    从比赛ID字符串中提取年份和球队ID
+    Extract year and teamID from a gameID string
 
-    参数:
-        id_str: 格式为"Year_Team1_Team2"的比赛ID字符串
+    Parameters:
+        id_str: Format of a gameID string as "Year_Team1_Team2"
 
-    返回:
-        元组 (year, team1, team2)
+    Returns:
+        Tuple (year, team1, team2)
     """
     parts = id_str.split('_')
     year = int(parts[0])
@@ -137,25 +137,25 @@ def extract_game_info(id_str):
 
 def merge_and_prepare_games(season_detail, tourney_detail):
     """
-    将常规赛和锦标赛数据合并为单个DataFrame。
-    添加一个新列'GameType'来表明比赛是来自常规赛还是锦标赛。
+    Merge regular season and tournament data into a single DataFrame.
+    Add a new column 'GameType' to indicate whether the data is from regular season or tournament.
 
-    参数:
-        season_detail: 常规赛比赛数据
-        tourney_detail: 锦标赛比赛数据
+    Parameters:
+        season_detail: Regular season game data
+        tourney_detail: Tournament game data
 
-    返回:
-        包含比赛数据的合并DataFrame，包括'GameType'列。
+    Returns:
+        Merged DataFrame containing game data including 'GameType' column.
     """
-    # 创建副本以避免修改原始DataFrame
+    # Create a copy to avoid modifying the original DataFrame
     season_detail = season_detail.copy()
     tourney_detail = tourney_detail.copy()
     
-    # 为每个DataFrame添加GameType列
+    # Add GameType column to each DataFrame
     season_detail['GameType'] = 'Regular'
     tourney_detail['GameType'] = 'Tournament'
     
-    # 合并数据
+    # Merge data
     games = pd.concat([season_detail, tourney_detail], ignore_index=True)
     
     return games
@@ -393,79 +393,79 @@ def load_kenpom_data(data_path, teams):
         print(f"Error loading KenPom data: {e}")
         return pd.DataFrame(columns=['TeamName', 'TeamID', 'Season'])
     
-    # 检查文件中是否存在 'TeamName' 列，如果没有，则尝试 'School' 或 'Team'
+    # Check if 'TeamName' column exists, if not, try 'School' or 'Team'
     if 'TeamName' not in kenpom_df.columns:
         if 'School' in kenpom_df.columns:
             kenpom_df.rename(columns={'School': 'TeamName'}, inplace=True)
         elif 'Team' in kenpom_df.columns:
             kenpom_df.rename(columns={'Team': 'TeamName'}, inplace=True)
         else:
-            raise KeyError("无法在 KenPom 数据中找到 'TeamName'、'School' 或 'Team' 列，请检查 CSV 文件格式。")
+            raise KeyError("Cannot find 'TeamName', 'School', or 'Team' column in KenPom data, please check CSV file format.")
     
-    # 显示前几个未处理的球队名称，帮助调试
+    # Display first few unprocessed team names for debugging
     print("Original KenPom team names (sample):", kenpom_df['TeamName'].head().tolist())
     
-    # 对 KenPom 数据中的球队名称进行标准化处理
+    # Standardize team names in KenPom data
     kenpom_df['TeamName_std'] = kenpom_df['TeamName'].apply(standardize_team_name)
     
-    # 对 teams 数据中的球队名称进行标准化处理
+    # Standardize team names in teams data
     teams['TeamName_std'] = teams['TeamName'].apply(standardize_team_name)
     
-    # 创建字典用于调试
+    # Create dictionary for debugging
     debug_mapping = {name: std for name, std in zip(teams['TeamName'], teams['TeamName_std'])}
     print("Sample of team name standardization:")
     for i, (orig, std) in enumerate(list(debug_mapping.items())[:5]):
         print(f"  {i+1}. '{orig}' -> '{std}'")
     
-    # 创建映射字典：标准化名称 -> TeamID
+    # Create mapping dictionary: standardized name -> TeamID
     mapping = teams.set_index('TeamName_std')['TeamID'].to_dict()
     
-    # 对标准化后的名称进行小写处理并映射到TeamID
+    # Lowercase and map standardized names to TeamID
     kenpom_df['TeamName_std_lower'] = kenpom_df['TeamName_std'].str.lower().str.strip()
     teams['TeamName_std_lower'] = teams['TeamName_std'].str.lower().str.strip()
     
-    # 重建映射字典，使用小写字符串
+    # Rebuild mapping dictionary, using lowercase string
     mapping_lower = teams.set_index('TeamName_std_lower')['TeamID'].to_dict()
     
-    # 应用映射
+    # Apply mapping
     kenpom_df['TeamID'] = kenpom_df['TeamName_std_lower'].map(mapping_lower)
     
-    # 调试匹配的问题
+    # Debug matching issues
     print("\nSample of standardized KenPom team names:")
     for i, row in kenpom_df.head().iterrows():
         mapped_id = row['TeamID']
         status = "✓" if not pd.isna(mapped_id) else "✗"
         print(f"  {status} '{row['TeamName']}' -> '{row['TeamName_std']}' -> ID: {mapped_id}")
     
-    # 检查映射的有效性
+    # Check mapping validity
     unmapped_teams = kenpom_df[kenpom_df['TeamID'].isna()].copy()
     if len(unmapped_teams) > 0:
         unmapped_count = len(unmapped_teams)
         print(f"Warning: {unmapped_count} teams from KenPom data could not be mapped to TeamIDs initially.")
         
-        # 创建备用名称映射字典（正式名称->ID）
+        # Create backup name mapping dictionary (official name->ID)
         team_names_dict = dict(zip(teams['TeamName_std_lower'], teams['TeamID']))
         
-        # 尝试通过部分匹配找到未匹配的团队
+        # Try to find unmatched teams through partial matching
         for i, row in unmapped_teams.iterrows():
             orig_name = row['TeamName']
             std_name = row['TeamName_std']
             
-            # 尝试1: 移除"Univ"，"University"，"College"等词汇后再匹配
+            # Try 1: Remove "Univ", "University", "College" etc. words before matching
             simple_name = std_name
             simple_name = re.sub(r'\sUniv(ersity)?(\sof)?', '', simple_name, flags=re.IGNORECASE)
             simple_name = re.sub(r'\sCollege', '', simple_name, flags=re.IGNORECASE)
             simple_name = re.sub(r'\sUniversidad', '', simple_name, flags=re.IGNORECASE)
             simple_name = simple_name.lower().strip()
             
-            # 尝试匹配简化的名称
+            # Try to match simplified name
             for official_name, team_id in team_names_dict.items():
                 official_simple = re.sub(r'\sUniv(ersity)?(\sof)?', '', official_name, flags=re.IGNORECASE)
                 official_simple = re.sub(r'\sCollege', '', official_simple, flags=re.IGNORECASE)
                 official_simple = re.sub(r'\sUniversidad', '', official_simple, flags=re.IGNORECASE)
                 official_simple = official_simple.lower().strip()
                 
-                # 如果简化后的名称匹配，或者一个名称是另一个名称的子串，则认为是匹配的
+                # If simplified name matches or one name is a substring of the other, consider it a match
                 if simple_name == official_simple or \
                    (len(simple_name) > 5 and simple_name in official_simple) or \
                    (len(official_simple) > 5 and official_simple in simple_name):
@@ -473,10 +473,10 @@ def load_kenpom_data(data_path, teams):
                     print(f"  ✓ Found match through simplification: '{orig_name}' -> '{std_name}' -> '{official_name}' -> ID: {team_id}")
                     break
             
-            # 如果仍未找到匹配项，尝试手动映射一些常见的名称
+            # If still no match found, try manual mapping some common names
             if pd.isna(kenpom_df.loc[i, 'TeamID']):
                 manual_matches = {
-                    'st marys': 3181,  # 例如，如果 St. Mary's 对应的ID是 3181
+                    'st marys': 3181,  # For example, if St. Mary's ID is 3181
                     'saint marys': 3181,
                     'st josephs': 3396,
                     'saint josephs': 3396,
@@ -532,13 +532,13 @@ def load_kenpom_data(data_path, teams):
                     'n florida': 3317
                 }
                 
-                # 检查是否有手动映射
+                # Check if manual mapping exists
                 simple_key = std_name.lower().strip()
                 if simple_key in manual_matches:
                     kenpom_df.loc[i, 'TeamID'] = manual_matches[simple_key]
                     print(f"  ✓ Found match through manual mapping: '{orig_name}' -> '{std_name}' -> ID: {manual_matches[simple_key]}")
         
-        # 重新检查未映射的团队
+        # Re-check unmapped teams
         still_unmapped = kenpom_df[kenpom_df['TeamID'].isna()]['TeamName'].unique()
         if len(still_unmapped) > 0:
             print(f"Still have {len(still_unmapped)} unmapped teams after additional matching attempts:")
@@ -595,7 +595,7 @@ def load_merged_kenpom_data(data_path, teams):
         print(f"Error loading merged KenPom data: {e}")
         return pd.DataFrame(columns=['Team_Name', 'TeamID', 'Year'])
     
-    # 记录原始数据统计信息
+    # Record original data statistics
     print(f"Loaded merged KenPom data with {len(kenpom_df)} rows and {len(kenpom_df['Team_Name'].unique())} unique teams.")
     print(f"Data spans seasons: {sorted(kenpom_df['Year'].unique())}")
     
@@ -618,47 +618,47 @@ def load_merged_kenpom_data(data_path, teams):
     # Display sample of team names from the merged KenPom data
     print("Original merged KenPom team names (sample):", kenpom_df['Team_Name'].head().tolist())
     
-    # ===== 增强标准化处理 =====
-    # 首先保存原始名称，以便在调试时参考
+    # ===== Enhanced standardization processing =====
+    # First save original names for reference in debugging
     kenpom_df['Original_Team_Name'] = kenpom_df['Team_Name']
     
-    # 1. 标准化处理 - 使用现有函数
+    # 1. Standardization processing - use existing function
     kenpom_df['TeamName_std'] = kenpom_df['Team_Name'].apply(standardize_team_name)
     men_teams['TeamName_std'] = men_teams['TeamName'].apply(standardize_team_name)
     
-    # 2. 创建多个变体用于匹配 - 从简单到复杂
+    # 2. Create multiple variations for matching - from simple to complex
     
-    # 2.1 小写版本
+    # 2.1 Lowercase version
     kenpom_df['TeamName_lower'] = kenpom_df['TeamName_std'].str.lower()
     men_teams['TeamName_lower'] = men_teams['TeamName_std'].str.lower()
     
-    # 2.2 移除常见单词版本（university, college等）
+    # 2.2 Remove common word version (university, college etc.)
     def simplify_name(name):
         if not isinstance(name, str):
             return ""
         name = name.lower()
         name = re.sub(r'\buniversity\b|\bcollege\b|\buniv\b|\bcoll\b|\bstate\b|\bst\b', '', name)
         name = re.sub(r'\bof\b|\bat\b|\bin\b|\band\b|\bthe\b|\ba\b|\ban\b', '', name)
-        name = re.sub(r'\s+', ' ', name).strip()  # 清理多余的空格
+        name = re.sub(r'\s+', ' ', name).strip()  # Clean up extra spaces
         return name
         
     kenpom_df['TeamName_simple'] = kenpom_df['TeamName_std'].apply(simplify_name)
     men_teams['TeamName_simple'] = men_teams['TeamName_std'].apply(simplify_name)
     
-    # 2.3 仅保留主要名称部分（通常是第一个单词）
+    # 2.3 Keep only main name part (usually the first word)
     def extract_main_name(name):
         if not isinstance(name, str):
             return ""
         name_parts = name.lower().split()
         if not name_parts:
             return ""
-        # 返回第一个单词，通常是学校的主要标识
+        # Return the first word, usually the school's main identifier
         return name_parts[0]
         
     kenpom_df['TeamName_main'] = kenpom_df['TeamName_std'].apply(extract_main_name)
     men_teams['TeamName_main'] = men_teams['TeamName_std'].apply(extract_main_name)
     
-    # 2.4 初始名与首字母匹配 (例如: "North Carolina" -> "nc")
+    # 2.4 Initial name and first letter matching (e.g.: "North Carolina" -> "nc")
     def get_initials(name):
         if not isinstance(name, str):
             return ""
@@ -668,7 +668,7 @@ def load_merged_kenpom_data(data_path, teams):
     kenpom_df['TeamName_initials'] = kenpom_df['TeamName_std'].apply(get_initials)
     men_teams['TeamName_initials'] = men_teams['TeamName_std'].apply(get_initials)
     
-    # 2.5 仅字母数字字符（移除空格和标点）
+    # 2.5 Only alphanumeric characters (remove spaces and punctuation)
     def alphanumeric_only(name):
         if not isinstance(name, str):
             return ""
@@ -677,7 +677,7 @@ def load_merged_kenpom_data(data_path, teams):
     kenpom_df['TeamName_alphanum'] = kenpom_df['TeamName_std'].apply(alphanumeric_only)
     men_teams['TeamName_alphanum'] = men_teams['TeamName_std'].apply(alphanumeric_only)
     
-    # 2.6 音素编码（Soundex）- 捕捉发音相似的名称
+    # 2.6 Phonetic encoding (Soundex) - capture similar sounding names
     try:
         from jellyfish import soundex
         has_jellyfish = True
@@ -688,7 +688,7 @@ def load_merged_kenpom_data(data_path, teams):
             words = name.lower().split()
             if not words:
                 return ""
-            # 仅对第一个单词应用Soundex
+            # Apply Soundex only to the first word
             return soundex(words[0])
             
         kenpom_df['TeamName_soundex'] = kenpom_df['TeamName_std'].apply(get_soundex)
@@ -697,17 +697,17 @@ def load_merged_kenpom_data(data_path, teams):
         has_jellyfish = False
         print("Jellyfish library not found. Soundex matching will be skipped.")
     
-    # 显示标准化结果样例
+    # Display standardized result sample
     name_changes = [(orig, std) for orig, std in zip(kenpom_df['Team_Name'], kenpom_df['TeamName_std']) if orig != std]
     if name_changes:
-        print("\n标准化名称示例:")
+        print("\nStandardized name example:")
         for orig, std in name_changes[:5]:
             print(f"  '{orig}' -> '{std}'")
     
-    # ===== 多阶段匹配逻辑 =====
-    print("\n开始多阶段团队名称匹配...")
+    # ===== Multi-stage matching logic =====
+    print("\nStarting multi-stage team name matching...")
     
-    # 初始化匹配跟踪
+    # Initialize matching tracking
     total_teams = len(kenpom_df)
     match_stats = {
         'initial': 0,
@@ -722,57 +722,57 @@ def load_merged_kenpom_data(data_path, teams):
         'manual': 0
     }
     
-    # 1. 创建所有匹配字典
+    # 1. Create all matching dictionaries
     mapping_dicts = {}
-    # 标准化名称映射
+    # Standardized name mapping
     mapping_dicts['std'] = dict(zip(men_teams['TeamName_std'], men_teams['TeamID']))
-    # 小写映射
+    # Lowercase mapping
     mapping_dicts['lower'] = dict(zip(men_teams['TeamName_lower'], men_teams['TeamID']))
-    # 简化名称映射
+    # Simplified name mapping
     mapping_dicts['simple'] = dict(zip(men_teams['TeamName_simple'], men_teams['TeamID']))
-    # 主要名称映射
+    # Main name mapping
     mapping_dicts['main'] = dict(zip(men_teams['TeamName_main'], men_teams['TeamID']))
-    # 首字母映射
+    # Initial letter mapping
     mapping_dicts['initials'] = dict(zip(men_teams['TeamName_initials'], men_teams['TeamID']))
-    # 字母数字映射
+    # Alphanumeric mapping
     mapping_dicts['alphanum'] = dict(zip(men_teams['TeamName_alphanum'], men_teams['TeamID']))
     if has_jellyfish:
-        # 音素映射
+        # Soundex mapping
         mapping_dicts['soundex'] = dict(zip(men_teams['TeamName_soundex'], men_teams['TeamID']))
     
-    # 2. 多阶段匹配
-    # 第1阶段: 标准名称匹配
+    # 2. Multi-stage matching
+    # 1st stage: Standard name matching
     kenpom_df['TeamID'] = kenpom_df['TeamName_std'].map(mapping_dicts['std'])
     match_stats['std'] = kenpom_df['TeamID'].notna().sum()
     
-    # 第2阶段: 对未匹配项使用小写名称匹配
+    # 2nd stage: Use lowercase name matching for unmatched items
     if match_stats['std'] < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
         kenpom_df.loc[unmatched_mask, 'TeamID'] = kenpom_df.loc[unmatched_mask, 'TeamName_lower'].map(mapping_dicts['lower'])
         match_stats['lower'] = kenpom_df['TeamID'].notna().sum() - match_stats['std']
     
-    # 第3阶段: 对未匹配项使用简化名称匹配
+    # 3rd stage: Use simplified name matching for unmatched items
     if match_stats['std'] + match_stats['lower'] < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
         kenpom_df.loc[unmatched_mask, 'TeamID'] = kenpom_df.loc[unmatched_mask, 'TeamName_simple'].map(mapping_dicts['simple'])
         match_stats['simple'] = kenpom_df['TeamID'].notna().sum() - match_stats['std'] - match_stats['lower']
     
-    # 第4阶段: 对未匹配项使用主要名称部分匹配
+    # 4th stage: Use main name part matching for unmatched items
     if sum(match_stats.values()) < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
         kenpom_df.loc[unmatched_mask, 'TeamID'] = kenpom_df.loc[unmatched_mask, 'TeamName_main'].map(mapping_dicts['main'])
         match_stats['main'] = kenpom_df['TeamID'].notna().sum() - sum([match_stats[k] for k in ['std', 'lower', 'simple']])
     
-    # 第5阶段: 对未匹配项使用首字母匹配
+    # 5th stage: Use initial letter matching for unmatched items
     if sum(match_stats.values()) < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
-        # 首字母可能有多个匹配，所以只有当首字母唯一时才使用
+        # Initial letter may have multiple matches, so use only when unique
         unique_initials = {k: v for k, v in mapping_dicts['initials'].items() 
                            if list(mapping_dicts['initials'].values()).count(v) == 1}
         kenpom_df.loc[unmatched_mask, 'TeamID'] = kenpom_df.loc[unmatched_mask, 'TeamName_initials'].map(unique_initials)
         match_stats['initials'] = kenpom_df['TeamID'].notna().sum() - sum([match_stats[k] for k in ['std', 'lower', 'simple', 'main']])
     
-    # 第6阶段: 对未匹配项使用字母数字匹配
+    # 6th stage: Use alphanumeric matching for unmatched items
     if sum(match_stats.values()) < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
         unique_alphanum = {k: v for k, v in mapping_dicts['alphanum'].items() 
@@ -780,7 +780,7 @@ def load_merged_kenpom_data(data_path, teams):
         kenpom_df.loc[unmatched_mask, 'TeamID'] = kenpom_df.loc[unmatched_mask, 'TeamName_alphanum'].map(unique_alphanum)
         match_stats['alphanum'] = kenpom_df['TeamID'].notna().sum() - sum([match_stats[k] for k in ['std', 'lower', 'simple', 'main', 'initials']])
     
-    # 第7阶段: 对未匹配项使用Soundex匹配
+    # 7th stage: Use Soundex matching for unmatched items
     if has_jellyfish and sum(match_stats.values()) < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
         unique_soundex = {k: v for k, v in mapping_dicts['soundex'].items() 
@@ -788,7 +788,7 @@ def load_merged_kenpom_data(data_path, teams):
         kenpom_df.loc[unmatched_mask, 'TeamID'] = kenpom_df.loc[unmatched_mask, 'TeamName_soundex'].map(unique_soundex)
         match_stats['soundex'] = kenpom_df['TeamID'].notna().sum() - sum([match_stats[k] for k in ['std', 'lower', 'simple', 'main', 'initials', 'alphanum']])
     
-    # 第8阶段: 对未匹配项使用模糊匹配
+    # 8th stage: Use fuzzy matching for unmatched items
     if sum(match_stats.values()) < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
         unmatched_rows = kenpom_df[unmatched_mask]
@@ -800,22 +800,22 @@ def load_merged_kenpom_data(data_path, teams):
             print("  rapidfuzz package not found, using basic similarity matching")
             has_rapidfuzz = False
         
-        # 对未匹配名称进行模糊匹配
+        # Perform fuzzy matching on unmatched names
         for idx, row in unmatched_rows.iterrows():
             team_name = row['TeamName_std']
             
             if has_rapidfuzz:
-                # 使用Rapidfuzz计算相似度
+                # Use Rapidfuzz to calculate similarity
                 matches = process.extract(
                     team_name,
                     men_teams['TeamName_std'].unique(),
-                    scorer=fuzz.token_sort_ratio,  # 使用token_sort_ratio，对单词顺序不敏感
+                    scorer=fuzz.token_sort_ratio,  # Use token_sort_ratio, not case sensitive
                     limit=3
                 )
                 
                 best_match = matches[0] if matches else None
                 
-                if best_match and best_match[1] >= 85:  # 相似度阈值85%
+                if best_match and best_match[1] >= 85:  # Similarity threshold 85%
                     matched_name = best_match[0]
                     matched_id = mapping_dicts['std'].get(matched_name)
                     
@@ -823,10 +823,10 @@ def load_merged_kenpom_data(data_path, teams):
                         kenpom_df.loc[idx, 'TeamID'] = matched_id
                         print(f"  Fuzzy matched: '{team_name}' -> '{matched_name}' (score: {best_match[1]}) -> ID: {matched_id}")
             else:
-                # 基础相似度计算方法
+                # Basic similarity calculation method
                 men_team_names = men_teams['TeamName_std'].unique()
                 
-                # 计算单词重叠率
+                # Calculate word overlap rate
                 def word_overlap(name1, name2):
                     words1 = set(re.findall(r'\b[a-zA-Z]+\b', name1.lower()))
                     words2 = set(re.findall(r'\b[a-zA-Z]+\b', name2.lower()))
@@ -841,7 +841,7 @@ def load_merged_kenpom_data(data_path, teams):
                 
                 for ref_name in men_team_names:
                     score = word_overlap(team_name, ref_name)
-                    if score > best_score and score >= 0.65:  # 65%以上的单词重叠
+                    if score > best_score and score >= 0.65:  # 65% or more word overlap
                         best_score = score
                         best_match = ref_name
                 
@@ -853,13 +853,13 @@ def load_merged_kenpom_data(data_path, teams):
         
         match_stats['fuzzy'] = kenpom_df['TeamID'].notna().sum() - sum([match_stats[k] for k in match_stats if k != 'fuzzy' and k != 'manual'])
     
-    # 第9阶段: 手动映射常见的未匹配团队
+    # 9th stage: Manual mapping for common unmatched teams
     if sum(match_stats.values()) < total_teams:
         unmatched_mask = kenpom_df['TeamID'].isna()
         
-        # 创建手动映射表 - 基于常见的未匹配团队
+        # Create manual mapping table - based on common unmatched teams
         manual_mappings = {
-            # KenPom名称(标准化后): TeamID
+            # KenPom name (standardized): TeamID
             'kentucky': 1314,
             'duke': 1181,
             'north carolina': 1314,
@@ -1000,23 +1000,23 @@ def load_merged_kenpom_data(data_path, teams):
             'saint louis': 1373,
             'st marys': 1373,
             'boston college': 1125,
-            # 添加更多映射...
+            # Add more mappings...
         }
         
-        # 小写版
+        # Lowercase version
         manual_mappings_lower = {k.lower(): v for k, v in manual_mappings.items()}
         
-        # 应用手动映射
+        # Apply manual mapping
         for idx, row in kenpom_df[unmatched_mask].iterrows():
             team_name = row['TeamName_std'].lower()
             
-            # 尝试直接匹配
+            # Try direct match
             if team_name in manual_mappings_lower:
                 kenpom_df.loc[idx, 'TeamID'] = manual_mappings_lower[team_name]
                 print(f"  Manual mapping: '{row['TeamName_std']}' -> ID: {manual_mappings_lower[team_name]}")
                 continue
             
-            # 尝试子字符串匹配
+            # Try substring match
             for map_name, map_id in manual_mappings_lower.items():
                 if (len(team_name) > 4 and team_name in map_name) or (len(map_name) > 4 and map_name in team_name):
                     kenpom_df.loc[idx, 'TeamID'] = map_id
@@ -1025,46 +1025,46 @@ def load_merged_kenpom_data(data_path, teams):
         
         match_stats['manual'] = kenpom_df['TeamID'].notna().sum() - sum([match_stats[k] for k in match_stats if k != 'manual'])
     
-    # 打印匹配统计
-    print("\n团队名称匹配统计:")
+    # Print matching statistics
+    print("\nTeam name matching statistics:")
     for stage, count in match_stats.items():
         if count > 0:
             print(f"  {stage}: {count} teams matched ({count/total_teams*100:.2f}%)")
     
     total_matched = kenpom_df['TeamID'].notna().sum()
-    print(f"\n总计: {total_matched}/{total_teams} 团队名称已成功匹配 ({total_matched/total_teams*100:.2f}%)")
+    print(f"\nTotal: {total_matched}/{total_teams} team names successfully matched ({total_matched/total_teams*100:.2f}%)")
     
-    # 打印未匹配的团队样例
+    # Print examples of unmatched teams
     unmatched_mask = kenpom_df['TeamID'].isna()
     if unmatched_mask.any():
         unmatched = kenpom_df[unmatched_mask][['Original_Team_Name', 'TeamName_std']].drop_duplicates()
-        print(f"\n仍有 {len(unmatched)} 个未匹配的唯一团队名称:")
+        print(f"\nStill {len(unmatched)} unique unmatched team names:")
         
-        # 显示一些未匹配的例子
+        # Display some examples of unmatched names
         if len(unmatched) > 0:
-            print("未匹配名称样例:")
+            print("Unmatched name example:")
             for i, (idx, row) in enumerate(unmatched.head(10).iterrows()):
                 print(f"  {i+1}. Original: '{row['Original_Team_Name']}', Standardized: '{row['TeamName_std']}'")
     
-    # 按赛季统计匹配率
+    # Team name matching rate by season
     if 'Season' in kenpom_df.columns:
-        print("\n按赛季统计匹配率:")
+        print("\nTeam name matching rate by season:")
         for season in sorted(kenpom_df['Season'].unique()):
             season_df = kenpom_df[kenpom_df['Season'] == season]
             season_matched = season_df['TeamID'].notna().sum()
             season_total = len(season_df)
             print(f"  Season {season}: {season_matched}/{season_total} teams matched ({season_matched/season_total*100:.1f}%)")
             
-            # 如果有未匹配的，显示头几个
+            # If there are unmatched, display the first few
             if season_matched < season_total:
                 unmatched_season = season_df[season_df['TeamID'].isna()]['Original_Team_Name'].unique()[:5]
                 unmatched_teams = ", ".join([f'"{t}"' for t in unmatched_season])
                 print(f"    Examples of unmatched teams: {unmatched_teams}")
     
-    # 删除临时列并转换TeamID为整数
+    # Drop temporary columns and convert TeamID to integer
     kenpom_df = kenpom_df.drop(columns=[col for col in kenpom_df.columns if col.startswith('TeamName_') and col != 'TeamName_std'])
     
-    # 过滤未匹配的行，确保TeamID是整数
+    # Filter unmatched rows, ensure TeamID is integer
     matched_kenpom_df = kenpom_df.dropna(subset=['TeamID']).copy()
     if len(matched_kenpom_df) > 0:
         matched_kenpom_df['TeamID'] = matched_kenpom_df['TeamID'].astype(int)
