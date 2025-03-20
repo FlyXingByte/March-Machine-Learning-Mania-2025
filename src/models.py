@@ -24,33 +24,32 @@ from sklearn.model_selection import TimeSeriesSplit
 
 def safe_column_selection(df, column_name):
     """
-    Safely select a column from a DataFrame, handling the case where
-    the selection returns a DataFrame instead of a Series.
+    安全地从DataFrame中选择一列，处理选择返回DataFrame而不是Series的情况。
     """
     col_data = df[column_name]
     if isinstance(col_data, pd.DataFrame):
-        print(f"  Safe column selection: Column '{column_name}' returned a DataFrame. Using first column.")
+        print(f"  安全列选择：列 '{column_name}' 返回了DataFrame。使用第一列。")
         col_data = col_data.iloc[:, 0]
     return col_data
 
 def get_base_models():
     """
-    Define a list of base models for the ensemble.
-    Note: Ridge regression is replaced by a calibrated Ridge classifier.
+    为集成定义基础模型列表。
+    注意：Ridge回归被校准的Ridge分类器替代。
     
-    Returns:
-        List of initialized model objects.
+    返回:
+        初始化的模型对象列表。
     """
     model_xgb = XGBClassifier(objective='binary:logistic', eval_metric='logloss',
                               n_estimators=300, random_state=42)
     model_lr = LogisticRegression(C=1, max_iter=1000, random_state=42, solver='liblinear')
-    # Replace Ridge regression with a calibrated Ridge classifier for classification
+    # 用校准的Ridge分类器替代Ridge回归进行分类
     model_ridge = CalibratedClassifierCV(RidgeClassifier(random_state=42), cv=3)
     model_et = ExtraTreesClassifier(n_estimators=100, random_state=42)
     model_rf = RandomForestClassifier(n_estimators=100, random_state=42)
     model_cat = CatBoostClassifier(iterations=300, verbose=0, random_seed=42)
     
-    # Add LightGBM model
+    # 添加LightGBM模型
     model_lgb = lgb.LGBMClassifier(
         n_estimators=300,
         learning_rate=0.05,
@@ -66,21 +65,21 @@ def get_base_models():
         importance_type='gain'
     )
     
-    # Add PyTorch MLP model (input_size will be set during fit)
+    # 添加PyTorch MLP模型（input_size将在拟合期间设置）
     model_mlp = PyTorchMLPWrapper(
-        input_size=None,  # Will be set during fit
+        input_size=None,  # 将在拟合期间设置
         hidden_size=128,
         dropout_rate=0.3,
         lr=0.001,
         batch_size=64,
-        epochs=20,  # Reduced epochs for faster training
-        patience=5,  # Early stopping patience
+        epochs=20,  # 减少轮次以加快训练
+        patience=5,  # 早停耐心值
         random_state=42
     )
     
-    # Add new models for ensemble diversity
+    # 添加新模型以增加集成多样性
     
-    # Gradient Boosting Classifier
+    # 梯度提升分类器
     model_gb = GradientBoostingClassifier(
         n_estimators=200,
         learning_rate=0.05,
@@ -91,7 +90,7 @@ def get_base_models():
         random_state=42
     )
     
-    # Histogram-based Gradient Boosting (faster version of GBM)
+    # 基于直方图的梯度提升（GBM的更快版本）
     model_hgb = HistGradientBoostingClassifier(
         max_iter=200,
         learning_rate=0.05,

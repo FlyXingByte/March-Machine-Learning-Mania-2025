@@ -4,14 +4,14 @@ import re
 
 def get_gender_from_teamid(team_id):
     """
-    Determine the gender of the team based on TeamID
+    根据TeamID确定球队性别
     
-    Args:
-        team_id: Team ID
+    参数:
+        team_id: 球队ID
         
-    Returns:
-        'M' for men's teams (ID 1000-1999)
-        'W' for women's teams (ID 3000-3999)
+    返回:
+        'M'表示男子球队（ID 1000-1999）
+        'W'表示女子球队（ID 3000-3999）
     """
     try:
         team_id = int(team_id) if team_id is not None else None
@@ -23,32 +23,32 @@ def get_gender_from_teamid(team_id):
         elif 3000 <= team_id < 4000:
             return 'W'
         else:
-            # Handle unexpected team ID ranges
-            print(f"Warning: Team ID {team_id} outside expected ranges (1000-1999 for men, 3000-3999 for women)")
-            # Default to men's team for IDs below 3000, women's for IDs 3000+
+            # 处理超出预期范围的球队ID
+            print(f"警告：球队ID {team_id} 超出预期范围（男子1000-1999，女子3000-3999）")
+            # 对于3000以下的ID默认为男子球队，3000+默认为女子球队
             return 'M' if team_id < 3000 else 'W'
     except (ValueError, TypeError) as e:
-        # Handle conversion errors for non-integer team_id
-        print(f"Error determining gender for team_id '{team_id}': {e}")
+        # 处理非整数team_id的转换错误
+        print(f"确定球队ID '{team_id}' 性别时出错: {e}")
         return None
 
 def feature_engineering(games, seed_dict):
     """
-    Basic feature engineering:
-    - Generate game IDs and order teams.
-    - Map seed values and calculate seed differences and strengths.
-    - Generate target variable.
+    基础特征工程:
+    - 生成比赛ID并对球队排序
+    - 映射种子值并计算种子差异和强度
+    - 生成目标变量
     
-    Args:
-        games: DataFrame with game data
-        seed_dict: Dictionary mapping Season_TeamID to seed value
+    参数:
+        games: 包含比赛数据的DataFrame
+        seed_dict: 将Season_TeamID映射到种子值的字典
         
-    Returns:
-        DataFrame with engineered features
+    返回:
+        带有工程特征的DataFrame
     """
-    print("Performing basic feature engineering...")
+    print("执行基础特征工程...")
     
-    # Generate game identifier and team order (sorted by TeamID)
+    # 生成比赛标识符和球队顺序（按TeamID排序）
     games['ID'] = games.apply(lambda r: '_'.join([str(r['Season'])] +
                                                  list(map(str, sorted([r['WTeamID'], r['LTeamID']])))),
                               axis=1)
@@ -59,39 +59,39 @@ def feature_engineering(games, seed_dict):
     games['IDTeam1'] = games.apply(lambda r: '_'.join([str(r['Season']), str(r['Team1'])]), axis=1)
     games['IDTeam2'] = games.apply(lambda r: '_'.join([str(r['Season']), str(r['Team2'])]), axis=1)
     
-    # Add gender features based on TeamID
+    # 根据TeamID添加性别特征
     games['Team1Gender'] = games['Team1'].apply(get_gender_from_teamid)
     games['Team2Gender'] = games['Team2'].apply(get_gender_from_teamid)
     
-    # Ensure the gender is the same for both teams (validation check)
+    # 确保两支球队的性别相同（验证检查）
     gender_mismatch = games[games['Team1Gender'] != games['Team2Gender']]
     if not gender_mismatch.empty:
-        print(f"Warning: {len(gender_mismatch)} games have mismatched genders between teams.")
-        # For debugging purposes, show some examples
+        print(f"警告：{len(gender_mismatch)}场比赛的球队之间存在性别不匹配。")
+        # 出于调试目的，显示一些示例
         if len(gender_mismatch) > 0:
-            print("Sample of gender mismatches:")
+            print("性别不匹配的样本：")
             print(gender_mismatch[['Season', 'Team1', 'Team2', 'Team1Gender', 'Team2Gender']].head(3))
     
-    # Add a single gender column for the game (since both teams should have the same gender)
+    # 为比赛添加单一性别列（因为两支球队应该具有相同的性别）
     games['Gender'] = games['Team1Gender']
     
-    # Convert string gender to numeric values (1 for men, 0 for women)
-    games['GenderCode'] = games['Gender'].map({'M': 1, 'W': 0}).fillna(0.5)  # Default 0.5 if unknown
+    # 将字符串性别转换为数值（男子为1，女子为0）
+    games['GenderCode'] = games['Gender'].map({'M': 1, 'W': 0}).fillna(0.5)  # 未知时默认0.5
     
-    # Drop the string gender columns as they can't be used by the model directly
+    # 删除字符串性别列，因为它们不能被模型直接使用
     games = games.drop(columns=['Team1Gender', 'Team2Gender', 'Gender'])
     
-    # Map seed values and calculate seed differences
+    # 映射种子值并计算种子差异
     games['Team1Seed'] = games['IDTeam1'].map(seed_dict).fillna(16)
     games['Team2Seed'] = games['IDTeam2'].map(seed_dict).fillna(16)
     games['SeedDiff'] = games['Team1Seed'] - games['Team2Seed']
     
-    # Seed strength features (exponentially decaying)
+    # 种子强度特征（指数衰减）
     games['Team1SeedStrength'] = np.exp(-games['Team1Seed'] / 4)
     games['Team2SeedStrength'] = np.exp(-games['Team2Seed'] / 4)
     games['SeedStrengthDiff'] = games['Team1SeedStrength'] - games['Team2SeedStrength']
     
-    # Generate target variable WinA (1 if Team1 wins, else 0)
+    # 生成目标变量WinA（如果Team1获胜则为1，否则为0）
     games['WinA'] = games.apply(lambda r: 1 if sorted([r['WTeamID'], r['LTeamID']])[0] == r['WTeamID'] else 0, axis=1)
     
     if 'WScore' in games.columns and 'LScore' in games.columns:

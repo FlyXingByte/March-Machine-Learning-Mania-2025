@@ -9,447 +9,418 @@ from sklearn.metrics import brier_score_loss
 import pandas as pd
 
 def parse_args():
-    """Parse command line arguments"""
+    """解析命令行参数"""
     parser = argparse.ArgumentParser(description='March Mania Prediction')
     parser.add_argument('--data_path', type=str, default="Z:\\kaggle\\MMLM2025\\March-Machine-Learning-Mania-2025\\input\\march-machine-learning-mania-2025",
-                        help='Path to the data directory')
+                        help='数据目录的路径')
     parser.add_argument('--start_year', type=int, default=2021,
-                        help='Only include seasons from this year onwards')
+                        help='只包含从该年份开始的赛季数据')
     parser.add_argument('--output_file', type=str, default="submission.csv",
-                        help='Output file name for predictions')
+                        help='预测结果输出文件名')
     parser.add_argument('--verbose', type=int, default=1,
-                        help='Verbosity level (0=minimal, 1=normal)')
+                        help='详细程度级别 (0=最小, 1=正常)')
     parser.add_argument('--stage', type=int, default=2,
-                        help='Competition stage (1 or 2)')
+                        help='比赛阶段 (1 或 2)')
     parser.add_argument('--test_mode', action='store_true',
-                        help='Enable test mode to only use 10 games per year for quick testing')
+                        help='启用测试模式，每年仅使用10场比赛进行快速测试')
     parser.add_argument('--simulation_mode', action='store_true',
-                        help='Enable simulation mode to train on 2021-2023 data + 2024 regular season data and evaluate on 2024 tournament data')
+                        help='启用模拟模式，在2021-2023数据 + 2024常规赛数据上训练，在2024锦标赛数据上评估')
     parser.add_argument('--use_extended_models', action='store_true',
-                        help='Use extended model set with model variants for greater diversity')
-    # Add new arguments for Monte Carlo simulation
+                        help='使用扩展模型集，包含更多模型变体以增加多样性')
+    # 新增蒙特卡罗模拟参数
     parser.add_argument('--use_monte_carlo', action='store_true',
-                        help='Enable Monte Carlo simulation to optimize predictions')
+                        help='启用蒙特卡罗模拟以优化预测')
     parser.add_argument('--num_simulations', type=int, default=10000,
-                        help='Number of Monte Carlo simulations to run')
+                        help='要运行的蒙特卡罗模拟次数')
     parser.add_argument('--simulation_weight', type=float, default=0.3,
-                        help='Weight to give to simulation results (0-1)')
+                        help='给予模拟结果的权重 (0-1)')
     return parser.parse_args()
 
 def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbose=1, stage=2, test_mode=False, 
                 simulation_mode=False, use_extended_models=False, use_monte_carlo=False, num_simulations=10000, 
                 simulation_weight=0.3):
     """
-    Run the entire March Mania prediction pipeline
+    运行完整的March Mania预测流程
 
-    Args:
-        data_path: Path to the data directory
-        start_year: Only include seasons from this year onwards
-        output_file: Output file name for predictions
-        verbose: Verbosity level (0=minimal, 1=normal)
-        stage: Competition stage (1 or 2)
-        test_mode: If True, only use 10 games per year for quick testing
-        simulation_mode: If True, train on 2021-2023 data + 2024 regular season data and evaluate on 2024 tournament data
-        use_extended_models: If True, use extended model set with model variants for greater diversity
-        use_monte_carlo: If True, use Monte Carlo simulation to optimize predictions
-        num_simulations: Number of Monte Carlo simulations to run
-        simulation_weight: Weight to give to simulation results (0-1)
+    参数:
+        data_path: 数据目录路径
+        start_year: 仅包含从该年份开始的赛季
+        output_file: 预测输出文件名
+        verbose: 详细程度级别 (0=最小, 1=正常)
+        stage: 比赛阶段 (1 或 2)
+        test_mode: 如为True，每年仅使用10场比赛进行快速测试
+        simulation_mode: 如为True，在2021-2023数据 + 2024常规赛数据上训练，在2024锦标赛数据上评估
+        use_extended_models: 如为True，使用扩展模型集，包含更多模型变体以增加多样性
+        use_monte_carlo: 如为True，使用蒙特卡罗模拟优化预测
+        num_simulations: 要运行的蒙特卡罗模拟次数
+        simulation_weight: 给予模拟结果的权重 (0-1)
     """
-    print(f"Running March Mania prediction pipeline from {start_year} onwards for Stage {stage}")
+    print(f"从{start_year}年开始运行March Mania预测流程，用于第{stage}阶段")
     if test_mode:
-        print("TEST MODE ENABLED: Only using 10 games per year for quick testing")
-        print("This will significantly reduce the dataset size and speed up the pipeline")
-        print("Note: Results will be less accurate but useful for debugging the full pipeline flow")
+        print("测试模式已启用：每年仅使用10场比赛进行快速测试")
+        print("这将显著减少数据集大小并加速流程")
+        print("注意：结果将不太准确，但对调试完整流程很有用")
     
     if simulation_mode:
-        print("SIMULATION MODE ENABLED: Training on 2021-2023 data + 2024 regular season data")
-        print("Will evaluate model performance on 2024 tournament data")
+        print("模拟模式已启用：在2021-2023数据 + 2024常规赛数据上训练")
+        print("将在2024锦标赛数据上评估模型性能")
     
     if use_extended_models:
-        print("EXTENDED MODELS ENABLED: Using a larger set of models with varied hyperparameters")
-        print("This will significantly increase training time but may improve prediction accuracy")
+        print("扩展模型已启用：使用具有多样超参数的更大模型集")
+        print("这将显著增加训练时间但可能提高预测准确性")
     
     if use_monte_carlo:
-        print("MONTE CARLO SIMULATION ENABLED: Will optimize predictions using tournament simulation")
-        print(f"Number of simulations: {num_simulations}, Simulation weight: {simulation_weight}")
+        print("蒙特卡罗模拟已启用：将使用锦标赛模拟优化预测")
+        print(f"模拟次数：{num_simulations}，模拟权重：{simulation_weight}")
     
-    # Step 1: Load data
+    # 第1步：加载数据
     season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year, stage, test_mode)
     
-    # Load merged KenPom data
+    # 加载合并的KenPom数据
     merged_kenpom_df = data_loader.load_merged_kenpom_data(data_path, teams)
     
-    # Create an empty DataFrame for the original KenPom data as it's been disabled
+    # 为原始KenPom数据创建空DataFrame，因为它已被禁用
     kenpom_df = pd.DataFrame()
-    print("Original KenPom data loading has been disabled, using merged_kenpom.csv instead.")
+    print("原始KenPom数据加载已禁用，改用merged_kenpom.csv。")
     
-    # Step 2: Merge and prepare games data
+    # 第2步：合并并准备比赛数据
     games = data_loader.merge_and_prepare_games(season_detail, tourney_detail)
     
-    # Step 3: Create seed dictionary
+    # 第3步：创建种子字典
     seed_dict = data_loader.prepare_seed_dict(seeds)
     
-    # Step 4: Basic feature engineering
-    print("Performing feature engineering...")
+    # 第4步：基础特征工程
+    print("执行特征工程...")
     games = feature_engineering.feature_engineering(games, seed_dict)
     
-    # Step 5: Add team statistics features (cumulative, avoiding target leakage)
+    # 第5步：添加团队统计特征（累积，避免目标泄漏）
     games, team_stats_cum = feature_engineering.add_team_features(games)
     
-    # Step 6: Add advanced features: head-to-head and recent performance
+    # 第6步：添加高级特征：对抗历史和最近表现
     games = feature_engineering.add_head_to_head_features(games)
     games = feature_engineering.add_recent_performance_features(games, window=5)
     
-    # Step 6.5: Add new features: Elo ratings, Strength of Schedule, and key statistical differentials
-    print("Adding advanced predictive features...")
+    # 第6.5步：添加新特征：Elo评级、赛程强度和关键统计差异
+    print("添加高级预测特征...")
     games = feature_engineering.add_elo_ratings(games, k_factor=20, initial_elo=1500, reset_each_season=True)
     games = feature_engineering.add_strength_of_schedule(games, team_stats_cum)
     games = feature_engineering.add_key_stat_differentials(games)
     games = feature_engineering.enhance_key_stat_differentials(games)
     games = feature_engineering.add_historical_tournament_performance(games, seed_dict)
     
-    # --- Merge KenPom features into training data ---
+    # --- 将KenPom特征合并到训练数据中 ---
     if not merged_kenpom_df.empty:
-        print("Adding merged KenPom features...")
+        print("添加合并的KenPom特征...")
         games = feature_engineering.merge_merged_kenpom_features(games, merged_kenpom_df)
     else:
-        print("No merged KenPom data available.")
+        print("没有可用的合并KenPom数据。")
     
 
     
-    # Step 7: Aggregate features
+    # 第7步：聚合特征
     agg_features = feature_engineering.aggregate_features(games)
     
-    # --- Filter training data based on mode ---
+    # --- 根据模式筛选训练数据 ---
     current_season = games['Season'].max()
-    print(f"Current season: {current_season}")
+    print(f"当前赛季: {current_season}")
     
-    # Set aside 2024 tournament data for evaluation in simulation mode
+    # 在模拟模式下，为评估保留2024锦标赛数据
     eval_data = None
     if simulation_mode and current_season >= 2024:
-        print("Extracting 2024 tournament data for evaluation...")
+        print("提取2024锦标赛数据用于评估...")
         eval_data = games[(games['Season'] == 2024) & (games['GameType'] == 'Tournament')].copy()
-        print(f"Evaluation data size: {len(eval_data)} games")
+        print(f"评估数据大小: {len(eval_data)} 场比赛")
     
-    # Filter training data
+    # 筛选训练数据
     if simulation_mode:
-        # For simulation mode: train on 2021-2023 all data + 2024 regular season data
+        # 模拟模式：在2021-2023所有数据 + 2024常规赛数据上训练
         games = games[
             ((games['Season'] < 2024)) |
             ((games['Season'] == 2024) & (games['GameType'] == 'Regular'))
         ]
     else:
-        # Normal mode: use current season Regular games and previous seasons Tournament games
+        # 正常模式：使用当前赛季常规赛和之前赛季锦标赛数据
         games = games[
             ((games['Season'] == current_season) & (games['GameType'] == 'Regular')) |
             ((games['Season'] < current_season) & (games['GameType'].isin(['Regular', 'Tournament'])))
         ]
     
-    print(f"Training data rows after filtering: {len(games)}")
+    print(f"筛选后的训练数据行数: {len(games)}")
     
-    # Step 8: Prepare submission features (submission games remain unchanged)
+    # 第8步：准备提交特征（提交比赛保持不变）
     submission_df = feature_engineering.prepare_submission_features(
         submission, seed_dict, team_stats_cum, data_loader.extract_game_info
     )
     
-    # Verify submission data integrity before further processing
+    # 处理前验证提交数据完整性
     if 'original_index' in submission_df.columns:
         expected_rows = len(submission_df['original_index'].unique())
         actual_rows = len(submission_df)
         if expected_rows != actual_rows:
-            print(f"WARNING: Submission data integrity issue detected!")
-            print(f"Expected {expected_rows} unique rows, but found {actual_rows} total rows")
-            print("This suggests duplicated or missing rows which will cause misalignment")
+            print(f"警告：检测到提交数据完整性问题！")
+            print(f"预期 {expected_rows} 个唯一行，但发现 {actual_rows} 个总行")
+            print("这表明有重复或缺失行，这将导致错位")
     
-    # Apply the same new features to submission data
-    print("Adding advanced predictive features to submission data...")
+    # 将相同的新特征应用到提交数据
+    print("向提交数据添加高级预测特征...")
     submission_df = feature_engineering.add_elo_ratings(submission_df, k_factor=20, initial_elo=1500, reset_each_season=True)
     submission_df = feature_engineering.add_strength_of_schedule(submission_df, team_stats_cum)
-    # Note: Key stat differentials require game details which may not be available for future games
-    # But if they are in the submission data, they will be used
+    # 注意：关键统计差异需要比赛详情，这些可能不适用于未来比赛
+    # 但如果它们在提交数据中，就会被使用
     submission_df = feature_engineering.add_key_stat_differentials(submission_df)
     submission_df = feature_engineering.enhance_key_stat_differentials(submission_df)
     submission_df = feature_engineering.add_historical_tournament_performance(submission_df, seed_dict)
     
-    # Try to add KenPom features to submission data
+    # 尝试将KenPom特征添加到提交数据
     if not merged_kenpom_df.empty:
-        print("Adding merged KenPom features to submission data...")
+        print("向提交数据添加合并的KenPom特征...")
         submission_df = feature_engineering.merge_merged_kenpom_features(submission_df, merged_kenpom_df)
     else:
-        print("No merged KenPom data available for submission.")
+        print("提交数据没有可用的合并KenPom数据。")
     
-    # Apply new features to evaluation data if in simulation mode
+    # 如果在模拟模式下，将新特征应用到评估数据
     if simulation_mode and eval_data is not None and not eval_data.empty:
-        print("Adding advanced predictive features to evaluation data...")
+        print("向评估数据添加高级预测特征...")
         eval_data = feature_engineering.add_elo_ratings(eval_data, k_factor=20, initial_elo=1500, reset_each_season=True)
         eval_data = feature_engineering.add_strength_of_schedule(eval_data, team_stats_cum)
         eval_data = feature_engineering.add_key_stat_differentials(eval_data)
         eval_data = feature_engineering.enhance_key_stat_differentials(eval_data)
         eval_data = feature_engineering.add_historical_tournament_performance(eval_data, seed_dict)
         
-        # Try to add KenPom features to eval data
+        # 尝试将KenPom特征添加到评估数据
         if not merged_kenpom_df.empty and simulation_mode:
-            print("Adding merged KenPom features to evaluation data...")
+            print("向评估数据添加合并的KenPom特征...")
             eval_data = feature_engineering.merge_merged_kenpom_features(eval_data, merged_kenpom_df)
         
 
     
-    # Verify submission data integrity after all feature engineering
+    # 在所有特征工程后验证提交数据完整性
     if 'original_index' in submission_df.columns:
         expected_rows = len(submission_df['original_index'].unique())
         actual_rows = len(submission_df)
         if expected_rows != actual_rows:
-            print(f"WARNING: Submission data integrity issue detected after feature engineering!")
-            print(f"Expected {expected_rows} unique rows, but found {actual_rows} total rows")
-            print("Attempting to fix by removing duplicates and sorting by original index...")
-            submission_df = submission_df.drop_duplicates(subset=['original_index']).sort_values('original_index').reset_index(drop=True)
-            print(f"After fixing: {len(submission_df)} rows")
+            print(f"警告：处理后检测到提交数据完整性问题！")
+            print(f"预期 {expected_rows} 个唯一行，但发现 {actual_rows} 个总行")
+            print("这表明有重复或缺失行，可能会导致错位")
+            # 在继续前试图修复这个问题
+            print("尝试通过删除可能的重复行来修复...")
+            # 保持原始索引顺序
+            submission_df = submission_df.drop_duplicates(subset=['original_index'], keep='first')
+            # 重新索引以确保顺序正确
+            submission_df = submission_df.sort_values('original_index').reset_index(drop=True)
+            print(f"修复后的行数: {len(submission_df)}")
     
-    # Step 10: Prepare final datasets
-    X_train, y_train, X_test, features = evaluation.prepare_dataset(games, submission_df)
+    # 第9步：准备训练和评估数据
+    # 这里添加新的特征选择或工程步骤
+    combined_features = feature_engineering.select_best_features(games, is_tournament=False)
+    print(f"选定 {len(combined_features)} 个特征用于模型训练")
     
-    print(f"Training data shape: {X_train.shape}")
-    print(f"Prediction data shape: {X_test.shape}")
-    print(f"Submission data shape before modeling: {submission_df.shape}")
+    X_train = games[combined_features].copy()
+    y_train = games['WTeamWins'].copy()
     
-    # Find the best threshold based on Brier Score using time-series cross-validation on training data
-    best_threshold = find_best_threshold(X_train, y_train, features, use_extended_models)
-    print(f"Best threshold based on Brier Score: {best_threshold:.4f}")
+    # 如果可用，获取提交数据的相同特征
+    X_submission = submission_df[combined_features].copy()
     
-    # Step 11: Train models and predict
-    print("Starting training and prediction...")
-    test_pred = models.stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=verbose, use_extended_models=use_extended_models)
+    if verbose >= 1:
+        print(f"训练数据形状: {X_train.shape}")
+        print(f"提交数据形状: {X_submission.shape}")
     
-    # Step 12: Generate initial submission file (create a temporary version first if using Monte Carlo)
-    print("Generating initial submission file...")
-    print(f"Test predictions shape: {test_pred.shape}")
+    # 显示训练集中缺失值的百分比
+    missing_train = (X_train.isnull().sum() / len(X_train)) * 100
+    missing_train = missing_train[missing_train > 0].sort_values(ascending=False)
+    if len(missing_train) > 0 and verbose >= 1:
+        print("\n训练集中缺失值的特征（百分比）:")
+        for feature, pct in missing_train.items():
+            print(f"{feature}: {pct:.2f}%")
     
-    if use_monte_carlo:
-        # Save initial predictions to a temporary file
-        initial_submission = evaluation.generate_submission(
-            submission_df, test_pred, output_file.replace('.csv', '_pre_monte_carlo.csv')
-        )
+    # 第10步：处理缺失值
+    X_train = feature_engineering.handle_missing_values(X_train)
+    X_submission = feature_engineering.handle_missing_values(X_submission)
+    
+    # 将同样的缺失值处理应用到评估数据（如果在模拟模式下）
+    if simulation_mode and eval_data is not None and not eval_data.empty:
+        X_eval = eval_data[combined_features].copy()
+        y_eval = eval_data['WTeamWins'].copy()
+        X_eval = feature_engineering.handle_missing_values(X_eval)
+        print(f"评估数据形状: {X_eval.shape}")
+        
+        # 第11.5步：如果处于模拟模式，评估模型性能
+        evaluate_model(X_train, y_train, X_eval, y_eval, combined_features, use_extended_models)
+    
+    # 第11步：训练模型并生成预测
+    # 使用模型集合进行训练
+    print("训练模型集合...")
+    
+    # 选择最佳阈值（如果不处于模拟模式）
+    best_threshold = 0.5  # 默认值
+    if not simulation_mode:
+        best_threshold = find_best_threshold(X_train, y_train, combined_features, use_extended_models)
+        print(f"使用最佳阈值: {best_threshold:.4f}")
+    
+    # 根据配置选择基本或扩展模型集
+    if use_extended_models:
+        print("使用扩展模型集...")
+        models_list = models.get_extended_models()
     else:
-        # Generate the final submission directly if not using Monte Carlo
-        final_submission = evaluation.generate_submission(submission_df, test_pred, output_file)
+        models_list = models.get_base_models()
     
-    # Step 12.5: Monte Carlo simulation (if enabled)
+    # 训练所有模型
+    trained_models = models.train_all_models(X_train, y_train, models_list, verbose=verbose)
+    
+    # 生成预测
+    predictions = models.predict_with_all_models(trained_models, X_submission, verbose=verbose)
+    
+    # 第12步：如果启用，使用蒙特卡洛模拟优化
     if use_monte_carlo:
-        print("\n--- Running Monte Carlo Tournament Simulation ---")
+        print(f"运行 {num_simulations} 次蒙特卡洛模拟...")
         import monte_carlo
         
-        # Make sure initial_submission has the necessary columns
-        initial_submission = initial_submission.copy()
+        # 对提交数据使用未调整的模型预测作为基准
+        base_predictions = predictions.copy()
         
-        # Run Monte Carlo simulation and optimize predictions
-        optimized_submission = monte_carlo.simulate_and_optimize(
-            initial_submission, 
-            seed_dict,
-            team_stats_cum,  # Pass team statistics for better probability estimation
+        # 执行蒙特卡洛模拟
+        simulation_predictions = monte_carlo.run_monte_carlo_simulations(
+            submission, seed_dict, trained_models, X_submission, 
             num_simulations=num_simulations,
-            simulation_weight=simulation_weight
+            verbose=verbose
         )
         
-        # Generate final submission file with optimized predictions
-        print("Generating final submission file with Monte Carlo optimized predictions...")
-        final_submission = optimized_submission.copy()
-        final_submission.to_csv(output_file, index=False)
+        # 融合基本预测和模拟预测
+        for i in range(len(predictions)):
+            predictions[i] = (1 - simulation_weight) * base_predictions[i] + simulation_weight * simulation_predictions[i]
         
-        # Print comparison of original vs. optimized predictions
-        print("\nComparing original vs. optimized predictions:")
-        original_mean = initial_submission['Pred'].mean()
-        optimized_mean = final_submission['Pred'].mean()
-        print(f"  Original mean: {original_mean:.4f}")
-        print(f"  Optimized mean: {optimized_mean:.4f}")
-        print(f"  Mean difference: {abs(optimized_mean - original_mean):.4f}")
-        
-        # Calculate and print the average absolute change in predictions
-        common_ids = set(initial_submission['ID']).intersection(final_submission['ID'])
-        changes = [abs(final_submission.loc[final_submission['ID'] == id, 'Pred'].iloc[0] - 
-                      initial_submission.loc[initial_submission['ID'] == id, 'Pred'].iloc[0])
-                  for id in common_ids]
-        avg_change = sum(changes) / len(changes) if changes else 0
-        print(f"  Average absolute change in predictions: {avg_change:.4f}")
-        
-        # Count significantly changed predictions (e.g., >0.05)
-        sig_changes = sum(1 for c in changes if c > 0.05)
-        print(f"  Predictions with significant changes (>0.05): {sig_changes} ({sig_changes/len(changes)*100:.1f}%)")
+        print(f"已完成蒙特卡洛模拟，使用 {simulation_weight:.2f} 权重融合")
     
-    # Print final submission stats
-    if use_monte_carlo:
-        evaluation.print_submission_stats(final_submission)
+    # 修复边缘情况：确保预测在[0.01, 0.99]范围内
+    predictions = np.clip(predictions, 0.01, 0.99)
     
-    # Step 13: Evaluate on 2024 tournament data if in simulation mode
-    if simulation_mode and eval_data is not None and not eval_data.empty:
-        print("\n--- Simulation Mode Evaluation on 2024 Tournament Data ---")
-        X_eval, y_eval, _, _ = evaluation.prepare_dataset(eval_data, None)
-        
-        print(f"Evaluation data shape: {X_eval.shape}")
-        eval_metrics = evaluate_model(X_train, y_train, X_eval, y_eval, features, use_extended_models)
-        
-        # Save evaluation results
-        eval_output = output_file.replace('.csv', '_eval_results.csv')
-        evaluation.save_evaluation_results(eval_metrics, eval_output)
-        print(f"Evaluation results saved to {eval_output}")
+    # 准备最终提交
+    submission_output = pd.read_csv(os.path.join(data_path, "SampleSubmissionStage2.csv" if stage == 2 else "SampleSubmissionStage1.csv"))
+    submission_output['Pred'] = predictions
     
-    print(f"Pipeline complete! Submission saved to {output_file}")
-    if test_mode:
-        print("Remember: This was run in TEST MODE with a reduced dataset.")
-        print("For actual competition predictions, run without the --test_mode flag.")
-    if use_monte_carlo:
-        print("Monte Carlo simulation was used to optimize predictions.")
-        print(f"Number of simulations: {num_simulations}")
-        print(f"Simulation weight: {simulation_weight}")
+    # 保存预测
+    submission_output.to_csv(output_file, index=False)
+    print(f"预测已保存至 {output_file}")
     
-    return final_submission
+    return submission_output
 
 def evaluate_model(X_train, y_train, X_eval, y_eval, features, use_extended_models=False):
     """
-    Evaluate model performance on the evaluation dataset
+    在真实评估数据上评估模型性能
     
-    Args:
-        X_train: Training features
-        y_train: Training target
-        X_eval: Evaluation features
-        y_eval: Evaluation target
-        features: List of feature names
-        use_extended_models: Whether to use the extended model set
-        
-    Returns:
-        Dictionary with evaluation metrics and best threshold
+    参数:
+        X_train: 训练特征
+        y_train: 训练标签
+        X_eval: 评估特征
+        y_eval: 评估标签
+        features: 特征列表
+        use_extended_models: 是否使用扩展模型集
     """
-    from sklearn.metrics import log_loss, accuracy_score, roc_auc_score
-    import models  # Import here to avoid circular imports
+    print("\n在2024锦标赛数据上进行模型评估...")
     
-    print("Evaluating model performance on 2024 tournament data...")
+    # 根据配置选择基本或扩展模型集
+    if use_extended_models:
+        print("使用扩展模型集进行评估...")
+        models_list = models.get_extended_models()
+    else:
+        models_list = models.get_base_models()
     
-    # Train model using the same approach as for predictions
-    pred_eval = models.stacking_ensemble_cv(X_train, y_train, X_eval, features, verbose=1, use_extended_models=use_extended_models)
+    # 训练所有模型
+    trained_models = models.train_all_models(X_train, y_train, models_list, verbose=1)
     
-    # Calculate metrics
-    metrics = {
-        'log_loss': log_loss(y_eval, pred_eval),
-        'accuracy': accuracy_score(y_eval, pred_eval > 0.5),
-        'roc_auc': roc_auc_score(y_eval, pred_eval)
-    }
+    # 在评估集上进行预测
+    eval_predictions = models.predict_with_all_models(trained_models, X_eval, verbose=1)
     
-    # Calculate Brier Score
-    brier_score = brier_score_loss(y_eval, pred_eval)
-    print(f"Brier Score: {brier_score:.4f}")
-    metrics['brier_score'] = brier_score
+    # 评估指标：准确度和对数损失
+    accuracy = (eval_predictions > 0.5).astype(int) == y_eval
+    accuracy_pct = accuracy.mean() * 100
     
-    # Use the best threshold found during training (passed from the main pipeline)
-    print(f"Evaluation metrics: {metrics}")
+    # 计算对数损失
+    from sklearn.metrics import log_loss
+    log_loss_score = log_loss(y_eval, eval_predictions)
     
-    return metrics
+    # 计算Brier分数
+    brier_score = brier_score_loss(y_eval, eval_predictions)
+    
+    print(f"评估集大小: {len(X_eval)} 场比赛")
+    print(f"准确度: {accuracy_pct:.2f}%")
+    print(f"对数损失: {log_loss_score:.4f}")
+    print(f"Brier分数: {brier_score:.4f}")
+    print("注意：锦标赛预测通常比常规赛预测更具挑战性")
 
 def find_best_threshold(X_train, y_train, features, use_extended_models=False):
     """
-    Find the best threshold based on Brier Score using time-series cross-validation on training data
+    找到将概率转换为二元预测的最佳阈值
     
-    Args:
-        X_train: Training features
-        y_train: Training target
-        features: List of feature names
-        use_extended_models: Whether to use the extended model set
+    参数:
+        X_train: 训练特征
+        y_train: 训练标签
+        features: 特征列表
+        use_extended_models: 是否使用扩展模型集
         
-    Returns:
-        Best threshold value
+    返回:
+        最佳阈值值
     """
-    import models  # Import here to avoid circular imports
-    import numpy as np
+    from sklearn.model_selection import StratifiedKFold
     
-    print("Finding best threshold based on Brier Score using time-series cross-validation...")
+    print("寻找最佳预测阈值...")
     
-    # Check if Season column exists for time series validation
-    if 'Season' not in X_train.columns:
-        print("Warning: 'Season' column not found. Using default threshold 0.5")
-        return 0.5
+    # 根据配置选择基本或扩展模型集
+    if use_extended_models:
+        models_list = models.get_extended_models()
+    else:
+        models_list = models.get_base_models()
     
-    # Get all unique seasons and sort them
-    seasons = np.sort(X_train['Season'].unique())
-    print(f"Found {len(seasons)} seasons for time series validation: {seasons}")
+    # 使用交叉验证找到最佳阈值
+    kf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    all_preds = []
+    all_targets = []
     
-    if len(seasons) <= 1:
-        print("Warning: Only one season of data available. Using default threshold 0.5")
-        return 0.5
-    
-    # Initialize prediction array
-    train_pred = np.zeros(len(y_train))
-    train_indices_used = np.zeros(len(y_train), dtype=bool)
-    
-    # Use time series forward validation: for each season, train on all previous seasons
-    for i, season in enumerate(seasons[1:], 1):  # Start from second season
-        print(f"  Validating season {season}, training on seasons {seasons[:i]}")
+    for train_idx, val_idx in kf.split(X_train, y_train):
+        X_train_fold, X_val_fold = X_train.iloc[train_idx], X_train.iloc[val_idx]
+        y_train_fold, y_val_fold = y_train.iloc[train_idx], y_train.iloc[val_idx]
         
-        # Training set: all data before current season
-        train_idx = X_train[X_train['Season'] < season].index
+        # 训练所有模型
+        trained_models = models.train_all_models(X_train_fold, y_train_fold, models_list, verbose=0)
         
-        # Validation set: current season's data
-        val_idx = X_train[X_train['Season'] == season].index
+        # 获取验证集预测
+        val_preds = models.predict_with_all_models(trained_models, X_val_fold, verbose=0)
         
-        if len(train_idx) == 0 or len(val_idx) == 0:
-            print(f"  Warning: Empty training or validation data for season {season}, skipping fold")
-            continue
-        
-        X_train_fold = X_train.loc[train_idx]
-        X_val_fold = X_train.loc[val_idx]
-        y_train_fold = y_train.loc[train_idx]
-        
-        # Train model and predict on validation set
-        try:
-            val_pred = models.stacking_ensemble_cv(X_train_fold, y_train_fold, X_val_fold, features, verbose=0, use_extended_models=use_extended_models)
-            train_pred[val_idx] = val_pred
-            train_indices_used[val_idx] = True
-            print(f"  Season {season} validation complete, validation set size: {len(val_idx)}")
-        except Exception as e:
-            print(f"  Warning: Error during validation for season {season}: {str(e)}")
-            continue
+        all_preds.extend(val_preds)
+        all_targets.extend(y_val_fold)
     
-    # Only use samples with predictions to calculate best threshold
-    if np.sum(train_indices_used) == 0:
-        print("Warning: No successful validations performed. Using default threshold 0.5")
-        return 0.5
+    # 将列表转换为数组
+    all_preds = np.array(all_preds)
+    all_targets = np.array(all_targets)
     
-    y_train_used = y_train[train_indices_used]
-    train_pred_used = train_pred[train_indices_used]
-    
-    print(f"Time series validation complete, using {np.sum(train_indices_used)} samples for threshold optimization")
-    
-    # Calculate Brier Score for different thresholds
-    thresholds = np.arange(0.0, 1.01, 0.01)
+    # 尝试不同的阈值
+    thresholds = np.arange(0.3, 0.7, 0.01)
+    best_accuracy = 0
     best_threshold = 0.5
-    best_brier_score = float('inf')
     
-    for thresh in thresholds:
-        # Apply threshold to predictions
-        adjusted_preds = np.where(train_pred_used >= thresh, 1.0, 0.0)
-        
-        # Calculate Brier Score
-        brier = brier_score_loss(y_train_used, adjusted_preds)
-        
-        if brier < best_brier_score:
-            best_brier_score = brier
-            best_threshold = thresh
+    for threshold in thresholds:
+        accuracy = np.mean((all_preds > threshold) == all_targets)
+        if accuracy > best_accuracy:
+            best_accuracy = accuracy
+            best_threshold = threshold
     
-    print(f"Best threshold: {best_threshold:.2f}, Brier Score: {best_brier_score:.4f}")
-    
+    print(f"最佳阈值: {best_threshold:.4f}，交叉验证准确度: {best_accuracy*100:.2f}%")
     return best_threshold
 
 if __name__ == "__main__":
     args = parse_args()
     run_pipeline(
-        data_path=args.data_path,
-        start_year=args.start_year,
-        output_file=args.output_file,
-        verbose=args.verbose,
-        stage=args.stage,
-        test_mode=args.test_mode,
-        simulation_mode=args.simulation_mode,
-        use_extended_models=args.use_extended_models,
-        use_monte_carlo=args.use_monte_carlo,
-        num_simulations=args.num_simulations,
-        simulation_weight=args.simulation_weight
+        args.data_path,
+        args.start_year,
+        args.output_file,
+        args.verbose,
+        args.stage,
+        args.test_mode,
+        args.simulation_mode,
+        args.use_extended_models,
+        args.use_monte_carlo,
+        args.num_simulations,
+        args.simulation_weight
     )
 
 # 方案1：

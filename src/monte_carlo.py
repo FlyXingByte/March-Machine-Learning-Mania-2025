@@ -8,32 +8,32 @@ import copy
 
 def parse_tournament_structure(submission_df):
     """
-    Parse the tournament structure from the sample submission file.
+    从样本提交文件中解析锦标赛结构。
     
-    Args:
-        submission_df: DataFrame with 'ID' column containing matchup IDs
+    参数:
+        submission_df: 包含对阵ID的'ID'列的DataFrame
         
-    Returns:
-        Dictionary with tournament structure
+    返回:
+        包含锦标赛结构的字典
     """
-    print("Parsing tournament structure from submission data...")
+    print("从提交数据中解析锦标赛结构...")
     
-    # Check if ID column exists
+    # 检查ID列是否存在
     id_column = 'original_ID' if 'original_ID' in submission_df.columns else 'ID'
     
     if id_column not in submission_df.columns:
-        raise ValueError(f"Could not find ID column (tried 'ID' and 'original_ID')")
+        raise ValueError(f"找不到ID列（尝试了'ID'和'original_ID'）")
         
-    # Example ID format: "2025_1101_1106" for a game between TeamIDs 1101 and 1106 in 2025
+    # ID格式示例："2025_1101_1106"表示2025年TeamID 1101和1106之间的比赛
     seasons = submission_df[id_column].str.split('_').str[0].unique()
-    print(f"Found {len(seasons)} tournament season(s): {seasons}")
+    print(f"找到{len(seasons)}个锦标赛赛季：{seasons}")
     
     tournament_structure = {}
     
     for season in seasons:
         season_games = submission_df[submission_df[id_column].str.startswith(f"{season}_")]
         
-        # Extract all team IDs that appear in the tournament
+        # 提取出现在锦标赛中的所有球队ID
         team_ids = set()
         for id_str in season_games[id_column]:
             parts = id_str.split('_')
@@ -46,22 +46,22 @@ def parse_tournament_structure(submission_df):
             'games': season_games[id_column].tolist()
         }
         
-        print(f"Season {season}: Found {len(team_ids)} teams and {len(season_games)} potential matchups")
+        print(f"赛季{season}：找到{len(team_ids)}支球队和{len(season_games)}场潜在对阵")
     
     return tournament_structure
 
 
 def build_bracket(tournament_structure, seed_dict, season):
     """
-    Build a tournament bracket structure for simulation.
+    为模拟构建锦标赛对阵表结构。
     
-    Args:
-        tournament_structure: Dictionary with tournament structure
-        seed_dict: Dictionary mapping Season_TeamID to seed value
-        season: Season to build bracket for
+    参数:
+        tournament_structure: 包含锦标赛结构的字典
+        seed_dict: 将Season_TeamID映射到种子值的字典
+        season: 要构建对阵表的赛季
         
-    Returns:
-        Dictionary with bracket structure
+    返回:
+        包含对阵表结构的字典
     """
     teams = tournament_structure[season]['team_ids']
     bracket = {
@@ -70,20 +70,20 @@ def build_bracket(tournament_structure, seed_dict, season):
         'current_round': 1
     }
     
-    # Populate team information
+    # 填充球队信息
     for team_id in teams:
-        seed = seed_dict.get(f"{season}_{team_id}", 16)  # Default to seed 16 if not found
+        seed = seed_dict.get(f"{season}_{team_id}", 16)  # 如果未找到，默认为种子16
         bracket['teams'][team_id] = {
             'id': team_id,
             'seed': seed,
             'eliminated': False
         }
     
-    # Try to infer the bracket structure from game IDs
-    # This is a simplified approach and may need refinement for specific tournament formats
+    # 尝试从比赛ID推断对阵表结构
+    # 这是一种简化的方法，可能需要针对特定锦标赛格式进行完善
     all_matchups = tournament_structure[season]['games']
     
-    # Count the number of unique team pairs
+    # 计算唯一球队对的数量
     team_pairs = set()
     for matchup in all_matchups:
         parts = matchup.split('_')
@@ -91,12 +91,12 @@ def build_bracket(tournament_structure, seed_dict, season):
             team_pair = f"{min(parts[1], parts[2])}_{max(parts[1], parts[2])}"
             team_pairs.add(team_pair)
     
-    # Estimate the number of teams based on the number of unique matchups
-    estimated_teams = len(team_pairs) + 1  # n teams need n-1 games
+    # 根据唯一对阵数量估计球队数量
+    estimated_teams = len(team_pairs) + 1  # n支球队需要n-1场比赛
     if estimated_teams != len(teams):
-        print(f"Warning: Estimated {estimated_teams} teams from matchups, but found {len(teams)} team IDs")
+        print(f"警告：从对阵中估计有{estimated_teams}支球队，但找到了{len(teams)}个球队ID")
     
-    # Determine number of rounds based on team count (assumes power of 2)
+    # 根据球队数量确定轮次数（假设为2的幂）
     num_rounds = 1
     while 2**num_rounds < len(teams):
         num_rounds += 1

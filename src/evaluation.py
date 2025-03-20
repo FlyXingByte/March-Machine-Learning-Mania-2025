@@ -4,46 +4,46 @@ import os
 
 def generate_submission(submission_df, test_pred, output_file='submission.csv'):
     """
-    Generate the final submission file with predictions
+    生成带有预测的最终提交文件
     
-    Args:
-        submission_df: DataFrame with submission format
-        test_pred: Array of predictions
-        output_file: Filename for output submission
+    参数:
+        submission_df: 具有提交格式的DataFrame
+        test_pred: 预测数组
+        output_file: 输出提交的文件名
         
-    Returns:
-        DataFrame with ID and predictions
+    返回:
+        包含ID和预测的DataFrame
     """
-    # Check if we have tracking columns
+    # 检查是否有跟踪列
     has_tracking = 'original_index' in submission_df.columns and 'original_ID' in submission_df.columns
     
     if has_tracking:
-        # Create a new dataframe with original IDs and predictions
-        # Sort by original index to ensure correct order
+        # 创建一个包含原始ID和预测的新DataFrame
+        # 按原始索引排序以确保正确顺序
         if len(test_pred) != len(submission_df):
-            print(f"Warning: Prediction count ({len(test_pred)}) doesn't match submission dataframe size ({len(submission_df)})")
+            print(f"警告：预测计数({len(test_pred)})与提交DataFrame大小({len(submission_df)})不匹配")
             
-        # Create a temporary dataframe with index and predictions
+        # 创建包含索引和预测的临时DataFrame
         temp_df = pd.DataFrame({
             'original_index': submission_df['original_index'],
             'Pred': test_pred
         })
-        # Sort by original index
+        # 按原始索引排序
         temp_df = temp_df.sort_values('original_index')
         
-        # Create final submission with sorted predictions
+        # 创建具有排序预测的最终提交
         final_submission = pd.DataFrame({
             'ID': submission_df.sort_values('original_index')['original_ID'].values,
             'Pred': temp_df['Pred'].values
         })
         
-        print(f"Used direct alignment with tracking columns to create submission with {len(final_submission)} rows")
+        print(f"使用带跟踪列的直接对齐创建了包含{len(final_submission)}行的提交")
     else:
-        # Fall back to the original fix method if tracking columns aren't available
-        print("Warning: Tracking columns not found. Using fallback alignment method.")
+        # 如果跟踪列不可用，则回退到原始修复方法
+        print("警告：未找到跟踪列。使用后备对齐方法。")
         final_submission = fix_submission_format(submission_df, test_pred)
     
-    # Save to file
+    # 保存到文件
     final_submission.to_csv(output_file, index=False)
     
     print_submission_stats(final_submission)
@@ -52,58 +52,58 @@ def generate_submission(submission_df, test_pred, output_file='submission.csv'):
 
 def fix_submission_format(submission_df, test_pred):
     """
-    Fix submission format issues by adjusting the dataframe to match expected row counts
+    通过调整DataFrame以匹配预期的行数来修复提交格式问题
     
-    Args:
-        submission_df: DataFrame with submission data
-        test_pred: Array of predictions
+    参数:
+        submission_df: 包含提交数据的DataFrame
+        test_pred: 预测数组
         
-    Returns:
-        DataFrame with corrected format
+    返回:
+        格式已更正的DataFrame
     """
-    expected_counts = [264628, 131407]  # submission_64.csv and SampleSubmissionStage2.csv counts
+    expected_counts = [264628, 131407]  # submission_64.csv和SampleSubmissionStage2.csv计数
     current_count = len(submission_df)
     
     if current_count in expected_counts:
-        print(f"Submission format already correct with {current_count} rows")
+        print(f"提交格式已正确，有{current_count}行")
         return submission_df
     
-    print(f"Fixing submission format. Current count: {current_count}, Expected: {expected_counts}")
+    print(f"修复提交格式。当前计数：{current_count}，预期：{expected_counts}")
     
-    # Check if we can find the sample submission file to use as reference
+    # 检查是否可以找到样本提交文件作为参考
     data_path = "Z:\\kaggle\\MMLM2025\\March-Machine-Learning-Mania-2025\\input\\march-machine-learning-mania-2025"
     sample_file = None
     
     if os.path.exists(os.path.join(data_path, "SampleSubmissionStage2.csv")):
         sample_file = os.path.join(data_path, "SampleSubmissionStage2.csv")
-        print(f"Using SampleSubmissionStage2.csv as reference")
+        print(f"使用SampleSubmissionStage2.csv作为参考")
     elif os.path.exists(os.path.join(data_path, "SampleSubmissionStage1.csv")):
         sample_file = os.path.join(data_path, "SampleSubmissionStage1.csv")
-        print(f"Using SampleSubmissionStage1.csv as reference")
+        print(f"使用SampleSubmissionStage1.csv作为参考")
     
     if sample_file:
-        print(f"Loading reference submission from {sample_file}")
+        print(f"从{sample_file}加载参考提交")
         reference_df = pd.read_csv(sample_file)
         
-        # Create a mapping from ID to prediction
+        # 创建从ID到预测的映射
         id_to_pred = dict(zip(submission_df['ID'], test_pred))
         
-        # Create a new dataframe with the reference IDs
+        # 创建一个包含参考ID的新DataFrame
         fixed_df = pd.DataFrame({'ID': reference_df['ID']})
         
-        # Map predictions to the reference IDs
+        # 将预测映射到参考ID
         fixed_df['Pred'] = fixed_df['ID'].map(id_to_pred)
         
-        # Fill missing predictions with 0.5 (random chance)
+        # 使用0.5（随机机会）填充缺失的预测
         missing_count = fixed_df['Pred'].isna().sum()
         if missing_count > 0:
-            print(f"Warning: {missing_count} IDs in reference not found in submission. Using 0.5 as prediction.")
+            print(f"警告：参考中有{missing_count}个ID在提交中未找到。使用0.5作为预测。")
             fixed_df['Pred'] = fixed_df['Pred'].fillna(0.5)
         
-        print(f"Final fixed dataframe has {len(fixed_df)} rows")
+        print(f"最终修复的DataFrame有{len(fixed_df)}行")
         return fixed_df
     
-    print("Warning: Could not find reference submission file. Returning original dataframe.")
+    print("警告：找不到参考提交文件。返回原始DataFrame。")
     return submission_df
 
 def print_submission_stats(submission_df):

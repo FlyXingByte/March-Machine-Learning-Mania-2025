@@ -5,19 +5,19 @@ import re
 
 def load_data(data_path, start_year=2018, stage=2, test_mode=False):
     """
-    Load all necessary data files
+    加载所有必要的数据文件
     
-    Args:
-        data_path: Path to the data directory
-        start_year: Only include seasons from this year onwards
-        stage: Competition stage (1 or 2)
-        test_mode: If True, only load 10 games per year for quick testing
+    参数:
+        data_path: 数据目录的路径
+        start_year: 只包含从该年份开始的赛季
+        stage: 比赛阶段 (1 或 2)
+        test_mode: 如为True，每年仅加载10场比赛进行快速测试
     
-    Returns:
-        Tuple of dataframes (season_detail, tourney_detail, seeds, teams, submission)
+    返回:
+        数据框元组 (season_detail, tourney_detail, seeds, teams, submission)
     """
-    print(f"Loading data files from {start_year} and onwards")
-    # Load men's and women's regular season and tournament detailed data
+    print(f"加载{start_year}年及以后的数据文件")
+    # 加载男子和女子常规赛和锦标赛详细数据
     season_detail = pd.concat([
         pd.read_csv(os.path.join(data_path, "MRegularSeasonDetailedResults.csv")),
         pd.read_csv(os.path.join(data_path, "WRegularSeasonDetailedResults.csv"))
@@ -27,46 +27,46 @@ def load_data(data_path, start_year=2018, stage=2, test_mode=False):
         pd.read_csv(os.path.join(data_path, "WNCAATourneyDetailedResults.csv"))
     ], ignore_index=True)
     
-    # Filter data for the seasons after start_year
+    # 筛选start_year之后的赛季数据
     original_season_rows = len(season_detail)
     original_tourney_rows = len(tourney_detail)
     
     season_detail = season_detail[season_detail['Season'] >= start_year]
     tourney_detail = tourney_detail[tourney_detail['Season'] >= start_year]
     
-    print(f"Regular season data: Reduced from {original_season_rows} rows to {len(season_detail)} rows")
-    print(f"Tournament data: Reduced from {original_tourney_rows} rows to {len(tourney_detail)} rows")
+    print(f"常规赛数据：从{original_season_rows}行减少到{len(season_detail)}行")
+    print(f"锦标赛数据：从{original_tourney_rows}行减少到{len(tourney_detail)}行")
     
     seeds = pd.concat([
         pd.read_csv(os.path.join(data_path, "MNCAATourneySeeds.csv")),
         pd.read_csv(os.path.join(data_path, "WNCAATourneySeeds.csv"))
     ], ignore_index=True)
     
-    # Filter seed data
+    # 筛选种子数据
     original_seeds_rows = len(seeds)
     seeds = seeds[seeds['Season'] >= start_year]
-    print(f"Seed data: Reduced from {original_seeds_rows} rows to {len(seeds)} rows")
+    print(f"种子数据：从{original_seeds_rows}行减少到{len(seeds)}行")
     
-    # Load team information（合并 MTeams.csv 和 WTeams.csv）
+    # 加载球队信息（合并 MTeams.csv 和 WTeams.csv）
     teams = load_teams(data_path)
     
-    # If test mode is enabled, only keep a small sample of games per year for quick testing
+    # 如果启用测试模式，每年只保留少量比赛样本进行快速测试
     if test_mode:
-        # Group by Season and sample 10 games per season for regular season
+        # 按赛季分组并每赛季抽样10场比赛用于常规赛
         season_detail = season_detail.groupby('Season').apply(
             lambda x: x.sample(min(10, len(x)), random_state=42)
         ).reset_index(drop=True)
         
-        # Group by Season and sample min(10, available games) per season for tournament
+        # 按赛季分组并每赛季抽样最多10场可用比赛用于锦标赛
         tourney_detail = tourney_detail.groupby('Season').apply(
             lambda x: x.sample(min(10, len(x)), random_state=42)
         ).reset_index(drop=True)
         
-        print(f"Test mode enabled: Reduced regular season data to {len(season_detail)} rows")
-        print(f"Test mode enabled: Reduced tournament data to {len(tourney_detail)} rows")
+        print(f"测试模式已启用：常规赛数据减少至{len(season_detail)}行")
+        print(f"测试模式已启用：锦标赛数据减少至{len(tourney_detail)}行")
     
-    # Load the appropriate submission file based on stage
-    # Using the correct file names without the "M" prefix
+    # 根据阶段加载适当的提交文件
+    # 使用不带"M"前缀的正确文件名
     try:
         if stage == 1:
             submission_path = os.path.join(data_path, "SampleSubmissionStage1.csv")
@@ -74,44 +74,44 @@ def load_data(data_path, start_year=2018, stage=2, test_mode=False):
         else:
             submission_path = os.path.join(data_path, "SampleSubmissionStage2.csv")
             submission = pd.read_csv(submission_path)
-        print(f"Successfully loaded submission file: {submission_path}")
+        print(f"成功加载提交文件：{submission_path}")
     except FileNotFoundError:
-        print(f"Error: Submission file not found at {submission_path}")
-        print("Creating an empty submission DataFrame as fallback")
-        # Create an empty submission dataframe as fallback
+        print(f"错误：在{submission_path}找不到提交文件")
+        print("创建一个空的提交DataFrame作为后备")
+        # 创建一个空的提交dataframe作为后备
         submission = pd.DataFrame(columns=['ID', 'Pred'])
         
     return season_detail, tourney_detail, seeds, teams, submission
 
 def load_teams(data_path):
     """
-    Load and merge men's and women's teams information.
+    加载并合并男子和女子球队信息。
     
-    Args:
-        data_path: Path to the data directory.
+    参数:
+        data_path: 数据目录的路径。
         
-    Returns:
-        teams: 合并后的 DataFrame，包含 'TeamID' 和 'TeamName' 列
+    返回:
+        teams: 合并后的DataFrame，包含'TeamID'和'TeamName'列
     """
     try:
         mteams = pd.read_csv(os.path.join(data_path, "MTeams.csv"))
         wteams = pd.read_csv(os.path.join(data_path, "WTeams.csv"))
         teams = pd.concat([mteams, wteams], ignore_index=True)
-        print(f"Loaded {len(teams)} teams from MTeams and WTeams.")
+        print(f"从MTeams和WTeams加载了{len(teams)}支球队。")
     except Exception as e:
-        print("Error loading teams data:", e)
+        print("加载球队数据时出错:", e)
         teams = pd.DataFrame()
     return teams
 
 def prepare_seed_dict(seeds_df):
     """
-    Create a dictionary where the key is "Season_TeamID" and value is the seed number
+    创建一个字典，其中键是"Season_TeamID"，值是种子号码
 
-    Args:
-        seeds_df: DataFrame with seed information
+    参数:
+        seeds_df: 包含种子信息的DataFrame
 
-    Returns:
-        Dictionary mapping Season_TeamID to seed value
+    返回:
+        将Season_TeamID映射到种子值的字典
     """
     seed_dict = {
         '_'.join([str(int(row['Season'])), str(int(row['TeamID']))]): int(row['Seed'][1:3])
@@ -121,13 +121,13 @@ def prepare_seed_dict(seeds_df):
 
 def extract_game_info(id_str):
     """
-    Extract year and team IDs from the game ID string
+    从比赛ID字符串中提取年份和球队ID
 
-    Args:
-        id_str: Game ID string in format "Year_Team1_Team2"
+    参数:
+        id_str: 格式为"Year_Team1_Team2"的比赛ID字符串
 
-    Returns:
-        Tuple of (year, team1, team2)
+    返回:
+        元组 (year, team1, team2)
     """
     parts = id_str.split('_')
     year = int(parts[0])
@@ -137,32 +137,27 @@ def extract_game_info(id_str):
 
 def merge_and_prepare_games(season_detail, tourney_detail):
     """
-    Merge regular season and tournament data into a single DataFrame.
-    Adds a new column 'GameType' to indicate whether the game is from the regular season or tournament.
+    将常规赛和锦标赛数据合并为单个DataFrame。
+    添加一个新列'GameType'来表明比赛是来自常规赛还是锦标赛。
 
-    Args:
-        season_detail: Regular season game data
-        tourney_detail: Tournament game data
+    参数:
+        season_detail: 常规赛比赛数据
+        tourney_detail: 锦标赛比赛数据
 
-    Returns:
-        Combined DataFrame with game data, including the 'GameType' column.
+    返回:
+        包含比赛数据的合并DataFrame，包括'GameType'列。
     """
-    # Make copies to avoid modifying original DataFrames
+    # 创建副本以避免修改原始DataFrame
     season_detail = season_detail.copy()
     tourney_detail = tourney_detail.copy()
     
-    # Add a descriptive column for game type
+    # 为每个DataFrame添加GameType列
     season_detail['GameType'] = 'Regular'
     tourney_detail['GameType'] = 'Tournament'
     
-    # Merge all game data (regular season and tournament)
+    # 合并数据
     games = pd.concat([season_detail, tourney_detail], ignore_index=True)
-    print(f"Merged game data total rows: {len(games)}")
     
-    # If game location info is available, map it (e.g., 'A':1, 'H':2, 'N':3)
-    if 'WLoc' in games.columns:
-        games['WLoc'] = games['WLoc'].map({'A': 1, 'H': 2, 'N': 3})
-        
     return games
 
 def standardize_team_name(name):
