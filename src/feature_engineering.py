@@ -1932,8 +1932,26 @@ def enhance_key_stat_differentials(games):
     team_rebounding_stats = {}
     team_turnover_stats = {}
     
+    # Check if GameType column exists to filter for regular season games
+    if 'GameType' not in games.columns:
+        print("GameType column not found, cannot distinguish between regular season and tournament. Adding default GameType column...")
+        games['GameType'] = 'Regular'  # Default to regular season
+    
+    # Filter for only regular season games for statistics calculation
+    regular_games = games[games['GameType'] == 'Regular'].copy()
+    
+    if regular_games.empty:
+        print("No regular season games found, using all data for team statistics...")
+        regular_games = games.copy()
+    else:
+        print("Using only regular season games for team statistics to avoid data leakage...")
+        
+    # Sort by Season and DayNum to ensure correct order if they exist
+    if 'Season' in regular_games.columns and 'DayNum' in regular_games.columns:
+        regular_games = regular_games.sort_values(by=['Season', 'DayNum']).reset_index(drop=True)
+    
     # Process historical game data to calculate advanced team stats
-    for _, row in games.iterrows():
+    for _, row in regular_games.iterrows():
         season = row['Season']
         
         # Get teams - handle both raw and processed data formats
@@ -1988,46 +2006,6 @@ def enhance_key_stat_differentials(games):
                    team_shooting_stats[f"{season}_{wteam_id}"]['ftm'])
             team_shooting_stats[f"{season}_{wteam_id}"]['pts'] += pts
             team_shooting_stats[f"{season}_{wteam_id}"]['games'] += 1
-            
-            # For losing team (similar structure as winning team)
-            if f"{season}_{lteam_id}" not in team_shooting_stats:
-                team_shooting_stats[f"{season}_{lteam_id}"] = {
-                    'fgm': 0, 'fga': 0, 'fg3m': 0, 'fg3a': 0, 
-                    'ftm': 0, 'fta': 0, 'pts': 0, 'games': 0
-                }
-            
-            # Add stats based on data format
-            if using_processed:
-                # If data is already processed to Team1/Team2 format
-                if is_submission or (row['Team1'] == lteam_id):
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['Team1_FGM']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['Team1_FGA']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['Team1_FGM3']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['Team1_FGA3']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['Team1_FTM']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['Team1_FTA']
-                else:
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['Team2_FGM']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['Team2_FGA']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['Team2_FGM3']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['Team2_FGA3']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['Team2_FTM']
-                    team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['Team2_FTA']
-            else:
-                # Raw data format
-                team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] += row['LFGM']
-                team_shooting_stats[f"{season}_{lteam_id}"]['fga'] += row['LFGA']
-                team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] += row['LFGM3']
-                team_shooting_stats[f"{season}_{lteam_id}"]['fg3a'] += row['LFGA3']
-                team_shooting_stats[f"{season}_{lteam_id}"]['ftm'] += row['LFTM']
-                team_shooting_stats[f"{season}_{lteam_id}"]['fta'] += row['LFTA']
-            
-            # Calculate points
-            pts = (2 * (team_shooting_stats[f"{season}_{lteam_id}"]['fgm'] - team_shooting_stats[f"{season}_{lteam_id}"]['fg3m']) + 
-                   3 * team_shooting_stats[f"{season}_{lteam_id}"]['fg3m'] + 
-                   team_shooting_stats[f"{season}_{lteam_id}"]['ftm'])
-            team_shooting_stats[f"{season}_{lteam_id}"]['pts'] += pts
-            team_shooting_stats[f"{season}_{lteam_id}"]['games'] += 1
         
         # Process rebounding stats (similar structure for both teams)
         if has_rebounding_stats:

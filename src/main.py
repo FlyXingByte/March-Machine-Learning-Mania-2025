@@ -76,13 +76,12 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     # Step 1: Load data
     season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year, stage, test_mode)
     
-    # Create an empty DataFrame for the merged_kenpom_df
-    merged_kenpom_df = pd.DataFrame()
-    print("Merged KenPom data loading has been disabled.")
+    # Load merged KenPom data
+    merged_kenpom_df = data_loader.load_merged_kenpom_data(data_path, teams)
     
     # Create an empty DataFrame for the original KenPom data as it's been disabled
     kenpom_df = pd.DataFrame()
-    print("Original KenPom data loading has been disabled.")
+    print("Original KenPom data loading has been disabled, using merged_kenpom.csv instead.")
     
     # Step 2: Merge and prepare games data
     games = data_loader.merge_and_prepare_games(season_detail, tourney_detail)
@@ -109,8 +108,14 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     games = feature_engineering.enhance_key_stat_differentials(games)
     games = feature_engineering.add_historical_tournament_performance(games, seed_dict)
     
-    # --- Merged KenPom features section removed ---
-    print("Merged KenPom features have been disabled.")
+    # --- Merge KenPom features into training data ---
+    if not merged_kenpom_df.empty:
+        print("Adding merged KenPom features...")
+        games = feature_engineering.merge_merged_kenpom_features(games, merged_kenpom_df)
+    else:
+        print("No merged KenPom data available.")
+    
+
     
     # Step 7: Aggregate features
     agg_features = feature_engineering.aggregate_features(games)
@@ -166,8 +171,12 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     submission_df = feature_engineering.enhance_key_stat_differentials(submission_df)
     submission_df = feature_engineering.add_historical_tournament_performance(submission_df, seed_dict)
     
-    # --- Merged KenPom features for submission section removed ---
-    print("Merged KenPom features for submission have been disabled.")
+    # Try to add KenPom features to submission data
+    if not merged_kenpom_df.empty:
+        print("Adding merged KenPom features to submission data...")
+        submission_df = feature_engineering.merge_merged_kenpom_features(submission_df, merged_kenpom_df)
+    else:
+        print("No merged KenPom data available for submission.")
     
     # Apply new features to evaluation data if in simulation mode
     if simulation_mode and eval_data is not None and not eval_data.empty:
@@ -178,8 +187,12 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         eval_data = feature_engineering.enhance_key_stat_differentials(eval_data)
         eval_data = feature_engineering.add_historical_tournament_performance(eval_data, seed_dict)
         
-        # --- Merged KenPom features for eval data section removed ---
-        print("Merged KenPom features for evaluation data have been disabled.")
+        # Try to add KenPom features to eval data
+        if not merged_kenpom_df.empty and simulation_mode:
+            print("Adding merged KenPom features to evaluation data...")
+            eval_data = feature_engineering.merge_merged_kenpom_features(eval_data, merged_kenpom_df)
+        
+
     
     # Verify submission data integrity after all feature engineering
     if 'original_index' in submission_df.columns:
