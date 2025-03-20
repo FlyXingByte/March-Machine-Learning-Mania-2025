@@ -22,6 +22,17 @@ from sklearn.neural_network import MLPClassifier
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.model_selection import TimeSeriesSplit
 
+def safe_column_selection(df, column_name):
+    """
+    Safely select a column from a DataFrame, handling the case where
+    the selection returns a DataFrame instead of a Series.
+    """
+    col_data = df[column_name]
+    if isinstance(col_data, pd.DataFrame):
+        print(f"  Safe column selection: Column '{column_name}' returned a DataFrame. Using first column.")
+        col_data = col_data.iloc[:, 0]
+    return col_data
+
 def get_base_models():
     """
     Define a list of base models for the ensemble.
@@ -296,7 +307,9 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
     
     # Set up cross-validation with time series split
     if 'Season' in X_train.columns:
-        years = sorted(X_train['Season'].unique())
+        # Safely get Season column
+        season_col = safe_column_selection(X_train, 'Season')
+        years = sorted(season_col.unique())
         if verbose:
             print(f"Available seasons: {years}")
             print(f"Performing time series cross-validation:")
@@ -310,8 +323,8 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
                 print(f"  Split {i+1}: Train on {train_years}, validate on {val_year}")
             
             # 使用布尔掩码而不是直接索引
-            train_mask = X_train['Season'].isin(train_years)
-            val_mask = X_train['Season'] == val_year
+            train_mask = season_col.isin(train_years)
+            val_mask = season_col == val_year
             
             # 只有当验证集不为空时才添加这个分割
             if val_mask.any():
@@ -356,20 +369,34 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
         val_y = y_train.iloc[val_idx]
         X_test_fold = X_test.copy()
         
+        # Flatten multi-level columns if present
+        train_fold = flatten_dataframe_columns(train_fold)
+        val_fold = flatten_dataframe_columns(val_fold)
+        X_test_fold = flatten_dataframe_columns(X_test_fold)
+        
         # One-hot encode 'GameType' if exists
         if 'GameType' in train_fold.columns:
             if verbose:
                 print("One-hot encoding 'GameType' feature for training, validation and test sets.")
-            train_dummies = pd.get_dummies(train_fold['GameType'], prefix='GameType')
-            val_dummies = pd.get_dummies(val_fold['GameType'], prefix='GameType')
-            test_dummies = pd.get_dummies(X_test_fold['GameType'], prefix='GameType')
+            
+            # Safely select GameType column
+            train_game_type = safe_column_selection(train_fold, 'GameType')
+            val_game_type = safe_column_selection(val_fold, 'GameType')
+            test_game_type = safe_column_selection(X_test_fold, 'GameType')
+            
+            train_dummies = pd.get_dummies(train_game_type, prefix='GameType')
+            val_dummies = pd.get_dummies(val_game_type, prefix='GameType')
+            test_dummies = pd.get_dummies(test_game_type, prefix='GameType')
+            
             all_dummy_cols = sorted(set(train_dummies.columns).union(val_dummies.columns).union(test_dummies.columns))
             train_dummies = train_dummies.reindex(columns=all_dummy_cols, fill_value=0)
             val_dummies = val_dummies.reindex(columns=all_dummy_cols, fill_value=0)
             test_dummies = test_dummies.reindex(columns=all_dummy_cols, fill_value=0)
+            
             train_fold = pd.concat([train_fold.drop(columns=['GameType']), train_dummies], axis=1)
             val_fold = pd.concat([val_fold.drop(columns=['GameType']), val_dummies], axis=1)
             X_test_fold = pd.concat([X_test_fold.drop(columns=['GameType']), test_dummies], axis=1)
+            
             if 'GameType' in model_features:
                 model_features.remove('GameType')
             model_features.extend(all_dummy_cols)
@@ -378,26 +405,10 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
         features_to_remove = []
         for col in model_features:
             try:
-                # Try to select the column
-                train_col = train_fold[col]
-                val_col = val_fold[col]
-                test_col = X_test_fold[col]
-                
-                # Check if any selections returned a DataFrame
-                if isinstance(train_col, pd.DataFrame):
-                    print(f"  Warning: Column '{col}' in train_fold returned a DataFrame. Using first column.")
-                    train_col = train_col.iloc[:, 0]
-                    train_fold[col] = train_col
-                
-                if isinstance(val_col, pd.DataFrame):
-                    print(f"  Warning: Column '{col}' in val_fold returned a DataFrame. Using first column.")
-                    val_col = val_col.iloc[:, 0]
-                    val_fold[col] = val_col
-                
-                if isinstance(test_col, pd.DataFrame):
-                    print(f"  Warning: Column '{col}' in X_test_fold returned a DataFrame. Using first column.")
-                    test_col = test_col.iloc[:, 0]
-                    X_test_fold[col] = test_col
+                # Safely select columns
+                train_col = safe_column_selection(train_fold, col)
+                val_col = safe_column_selection(val_fold, col)
+                test_col = safe_column_selection(X_test_fold, col)
                 
                 # Now check the dtype
                 if (np.issubdtype(train_col.dtype, np.object_) or 
@@ -427,9 +438,15 @@ def stacking_ensemble_cv(X_train, y_train, X_test, features, verbose=1, use_exte
             print("Error: No numeric features available for training!")
             return np.zeros(X_test.shape[0])
         
-        # Imputation: median with missing indicator
+        # Imputation: median with missing indicator - only using regular season data
+        # Filter training data to only include regular season games for imputation
+        train_fold_regular = train_fold[train_fold.get('GameType', '') != 'Tournament'] if 'GameType' in train_fold.columns else train_fold
+        
         imputer = SimpleImputer(strategy='median', add_indicator=True)
-        train_imputed = imputer.fit_transform(train_fold[model_features])
+        # Fit imputer only on regular season data
+        imputer.fit(train_fold_regular[model_features])
+        # Transform using the fitted imputer
+        train_imputed = imputer.transform(train_fold[model_features])
         val_imputed = imputer.transform(val_fold[model_features])
         test_imputed = imputer.transform(X_test_fold[model_features])
         if imputer.add_indicator:
@@ -654,7 +671,7 @@ def spread_predictions(preds, spread_factor=1.5):
 
 # PyTorch MLP model class
 class PyTorchMLP(nn.Module):
-    def __init__(self, input_size, hidden_size=128, dropout_rate=0.3):
+    def __init__(self, input_size, hidden_size=32, dropout_rate=0.2):
         super(PyTorchMLP, self).__init__()
         self.model = nn.Sequential(
             nn.Linear(input_size, hidden_size),
@@ -674,7 +691,7 @@ class PyTorchMLP(nn.Module):
 
 # PyTorch wrapper for scikit-learn compatibility
 class PyTorchMLPWrapper:
-    def __init__(self, input_size, hidden_size=128, dropout_rate=0.3, 
+    def __init__(self, input_size, hidden_size=32, dropout_rate=0.2, 
                  lr=0.001, batch_size=64, epochs=20, patience=5, random_state=42):
         self.input_size = input_size
         self.hidden_size = hidden_size
@@ -792,7 +809,7 @@ class PyTorchMLPWrapper:
         return self.predict_proba(X)[:, 1]
 
 class PyTorchDeepNN(nn.Module):
-    def __init__(self, input_size, hidden_sizes=[256, 128, 64], dropout_rates=[0.3, 0.3, 0.3]):
+    def __init__(self, input_size, hidden_sizes=[64, 32, 16], dropout_rates=[0.2, 0.2, 0.2]):
         """
         A deeper neural network with multiple hidden layers, batch normalization, and residual connections.
         
@@ -868,7 +885,7 @@ class PyTorchDeepNN(nn.Module):
         return output.squeeze()
 
 class PyTorchDeepNNWrapper:
-    def __init__(self, input_size=None, hidden_sizes=[256, 128, 64], dropout_rates=[0.3, 0.3, 0.3],
+    def __init__(self, input_size=None, hidden_sizes=[64, 32, 16], dropout_rates=[0.2, 0.2, 0.2],
                  lr=0.001, batch_size=64, epochs=30, patience=7, random_state=42):
         """
         Wrapper for PyTorchDeepNN to make it compatible with scikit-learn.

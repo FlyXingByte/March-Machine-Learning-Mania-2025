@@ -2239,3 +2239,422 @@ def enhance_key_stat_differentials(games):
         print("  所有关键指标可用，创建综合'四因素'指标...")
     
     return result
+
+def merge_merged_kenpom_features(games, kenpom_df):
+    """
+    Merge KenPom features from the merged KenPom dataset into the games DataFrame.
+    Includes enhanced missing value handling and feature transformation.
+    
+    Args:
+        games: DataFrame with game data
+        kenpom_df: DataFrame with KenPom data, including TeamID and Season
+    
+    Returns:
+        Games DataFrame with added KenPom features
+    """
+    print("Merging merged KenPom features...")
+    if 'TeamID' not in kenpom_df.columns or 'Season' not in kenpom_df.columns:
+        print("Error: KenPom data missing required columns (TeamID or Season)")
+        return games
+    
+    # 记录匹配前游戏数统计
+    total_games = len(games)
+    
+    # 创建副本以避免修改原始数据
+    kenpom_features = kenpom_df.copy()
+    games_with_kenpom = games.copy()
+    
+    # 移除任何可能存在的旧KenPom特征列，避免重复合并
+    kenpom_cols = [col for col in games_with_kenpom.columns if col.startswith(('KP_W_', 'KP_L_'))]
+    if kenpom_cols:
+        print(f"Removing {len(kenpom_cols)} existing KenPom columns before re-merging")
+        games_with_kenpom = games_with_kenpom.drop(columns=kenpom_cols)
+    
+    # 列出需要排除的列
+    excluded_columns = ['Rk', 'W-L', 'Year', 'Season', 'TeamID', 'Team_Name']
+    print(f"Explicitly excluding columns: {excluded_columns}")
+    
+    # 定义所有需要使用的KenPom特征列
+    # 包括明确的数值列和那些应该是数值但可能被解析为字符串的列
+    potential_numeric_columns = [
+        'NetRtg', 'ORtg', 'DRtg', 'AdjT', 'Luck',
+        'SOS_NetRtg', 'SOS_ORtg', 'SOS_DRtg', 'NCSOS_NetRtg',
+        # 排名列 - 也是有用的预测特征
+        'ORtg_Rk', 'DRtg_Rk', 'AdjT_Rk', 'Luck_Rk',
+        'SOS_NetRtg_Rk', 'SOS_ORtg_Rk', 'SOS_DRtg_Rk', 'NCSOS_NetRtg_Rk'
+    ]
+    
+    # 检查这些列是否存在于数据中，并排除指定不使用的列
+    available_columns = [col for col in potential_numeric_columns 
+                        if col in kenpom_features.columns and col not in excluded_columns]
+    print(f"Found {len(available_columns)} potential KenPom feature columns after exclusions")
+    print(f"Available columns: {available_columns}")
+    
+    # 尝试将所有潜在数值列转换为数值类型
+    for col in available_columns:
+        try:
+            # 如果列是对象类型，先尝试清理特殊字符
+            if kenpom_features[col].dtype == 'object':
+                # 移除百分比符号、空格和其他干扰字符
+                kenpom_features[col] = kenpom_features[col].astype(str).str.replace('%', '')
+                kenpom_features[col] = kenpom_features[col].astype(str).str.replace('$', '')
+                kenpom_features[col] = kenpom_features[col].astype(str).str.strip()
+                # 转换为数值
+                kenpom_features[col] = pd.to_numeric(kenpom_features[col], errors='coerce')
+                print(f"  Converted '{col}' from string to numeric")
+        except Exception as e:
+            print(f"  Warning: Could not convert '{col}' to numeric: {e}")
+    
+    # 现在确定最终要使用的数值列
+    numeric_columns = [col for col in kenpom_features.select_dtypes(include=['number']).columns.tolist() 
+                      if col not in excluded_columns]
+    
+    # 检查是否有数值列可用
+    if not numeric_columns:
+        print("Warning: No numeric KenPom features found for merging")
+        return games_with_kenpom
+    
+    print(f"Final numeric KenPom features to merge: {len(numeric_columns)}")
+    print(f"Features: {numeric_columns}")
+    
+    # 增强特征预处理 - 标准化/归一化数值特征
+    for col in numeric_columns:
+        # 只对数值列进行处理
+        if col in kenpom_features.columns and pd.api.types.is_numeric_dtype(kenpom_features[col]):
+            # 检查是否有极端异常值
+            q1 = kenpom_features[col].quantile(0.01)
+            q3 = kenpom_features[col].quantile(0.99)
+            iqr = q3 - q1
+            lower_bound = q1 - 3 * iqr
+            upper_bound = q3 + 3 * iqr
+            
+            # 截断极端异常值
+            kenpom_features[col] = kenpom_features[col].clip(lower_bound, upper_bound)
+            
+            # 保留原始缩放前的值（为调试目的）
+            original_values = kenpom_features[col].copy()
+            
+            # 计算均值和标准差（用于标准化，处理后均值为0，标准差为1）
+            col_mean = kenpom_features[col].mean()
+            col_std = kenpom_features[col].std()
+            
+            # 只有当数据有足够的变异性时才进行标准化
+            if col_std > 1e-10:  # 避免除以接近零的值
+                # 应用标准化
+                kenpom_features[col] = (kenpom_features[col] - col_mean) / col_std
+                
+                # 记录缩放的效果
+                print(f"  Standardized {col}: Before [min={original_values.min():.2f}, max={original_values.max():.2f}], "
+                      f"After [min={kenpom_features[col].min():.2f}, max={kenpom_features[col].max():.2f}]")
+    
+    # 在TeamID列上添加特殊处理，解决未匹配的球队问题
+    enhanced_kenpom = kenpom_features.copy()
+    
+    # 修复未匹配的球队名称问题 - 检查列是否存在
+    print("添加特殊球队名称映射...")
+    
+    # 1. 查找NC State相关记录
+    if 'Team_Name' in kenpom_features.columns:
+        nc_state_mask = kenpom_features['Team_Name'].str.contains('N.C. State', case=False, na=False)
+        if nc_state_mask.any():
+            print(f"Found {nc_state_mask.sum()} NC State records. Adding mapping to TeamID 1314 (North Carolina State)")
+            enhanced_kenpom.loc[nc_state_mask, 'TeamID'] = 1314
+    
+    # 2. 查找Stephen F. Austin相关记录
+    if 'Team_Name' in kenpom_features.columns:
+        sfa_mask = kenpom_features['Team_Name'].str.contains('Stephen F', case=False, na=False)
+        if sfa_mask.any():
+            print(f"Found {sfa_mask.sum()} Stephen F. Austin records. Adding mapping to TeamID 1386 (Stephen F Austin)")
+            enhanced_kenpom.loc[sfa_mask, 'TeamID'] = 1386  # 使用估计的ID
+    
+    # 3. 查找UMass Lowell相关记录
+    if 'Team_Name' in kenpom_features.columns:
+        umass_lowell_mask = kenpom_features['Team_Name'].str.contains('UMass Lowell', case=False, na=False)
+        if umass_lowell_mask.any():
+            print(f"Found {umass_lowell_mask.sum()} UMass Lowell records. Adding mapping to TeamID 1265 (Massachusetts Lowell)")
+            enhanced_kenpom.loc[umass_lowell_mask, 'TeamID'] = 1265  # 使用估计的ID
+    
+    # 4. 查找USC Upstate相关记录
+    if 'Team_Name' in kenpom_features.columns:
+        usc_upstate_mask = kenpom_features['Team_Name'].str.contains('USC Upstate', case=False, na=False)
+        if usc_upstate_mask.any():
+            print(f"Found {usc_upstate_mask.sum()} USC Upstate records. Adding mapping to TeamID 1423 (South Carolina Upstate)")
+            enhanced_kenpom.loc[usc_upstate_mask, 'TeamID'] = 1423  # 使用估计的ID
+    
+    # 统计更新后的匹配率
+    missing_before = kenpom_features['TeamID'].isna().mean() * 100
+    missing_after = enhanced_kenpom['TeamID'].isna().mean() * 100
+    print(f"Manual team mapping improved match rate: {missing_before:.1f}% missing -> {missing_after:.1f}% missing")
+    
+    # 使用增强后的数据集进行合并
+    kenpom_features = enhanced_kenpom
+    
+    # 检查数据集中的团队ID列名
+    # 对于比赛数据，可能使用WTeamID/LTeamID或Team1ID/Team2ID
+    team1_id_col = 'WTeamID' if 'WTeamID' in games_with_kenpom.columns else 'Team1ID'
+    team2_id_col = 'LTeamID' if 'LTeamID' in games_with_kenpom.columns else 'Team2ID'
+    
+    if team1_id_col not in games_with_kenpom.columns or team2_id_col not in games_with_kenpom.columns:
+        print(f"Error: Required team ID columns not found. Needed {team1_id_col} and {team2_id_col}.")
+        return games_with_kenpom
+    
+    print(f"Using team ID columns: {team1_id_col} and {team2_id_col}")
+    
+    # 3. 为获胜队和失败队合并KenPom特征
+    # 先为第一支队伍合并
+    print(f"Merging KenPom features for {team1_id_col}...")
+    wins_with_kp = games_with_kenpom.merge(
+        kenpom_features[['TeamID', 'Season'] + numeric_columns],
+        left_on=['Season', team1_id_col],
+        right_on=['Season', 'TeamID'],
+        how='left'
+    )
+    
+    # 计算第一支队伍的匹配率
+    team1_match_count = wins_with_kp['TeamID'].notna().sum()
+    team1_match_rate = team1_match_count / total_games * 100
+    print(f"Team 1 match rate: {team1_match_count}/{total_games} ({team1_match_rate:.1f}%)")
+    
+    # 重命名第一支队伍的特征列 (使用KP_W_前缀保持一致性)
+    for col in numeric_columns:
+        if col in wins_with_kp.columns:
+            wins_with_kp.rename(columns={col: f'KP_W_{col}'}, inplace=True)
+    
+    # 从合并结果中删除临时TeamID列
+    if 'TeamID' in wins_with_kp.columns:
+        wins_with_kp.drop(columns=['TeamID'], inplace=True)
+    
+    # 再为第二支队伍合并
+    print(f"Merging KenPom features for {team2_id_col}...")
+    games_with_kp = wins_with_kp.merge(
+        kenpom_features[['TeamID', 'Season'] + numeric_columns],
+        left_on=['Season', team2_id_col],
+        right_on=['Season', 'TeamID'],
+        how='left'
+    )
+    
+    # 计算第二支队伍的匹配率
+    team2_match_count = games_with_kp['TeamID'].notna().sum()
+    team2_match_rate = team2_match_count / total_games * 100
+    print(f"Team 2 match rate: {team2_match_count}/{total_games} ({team2_match_rate:.1f}%)")
+    
+    # 重命名第二支队伍的特征列 (使用KP_L_前缀保持一致性)
+    for col in numeric_columns:
+        if col in games_with_kp.columns:
+            games_with_kp.rename(columns={col: f'KP_L_{col}'}, inplace=True)
+    
+    # 从合并结果中删除临时TeamID列
+    if 'TeamID' in games_with_kp.columns:
+        games_with_kp.drop(columns=['TeamID'], inplace=True)
+    
+    # 4. 高级缺失值处理 - 根据种子排名和类似球队填充
+    print("\n执行高级缺失值填充...")
+    
+    # 按赛季统计缺失值情况
+    seasons = sorted(games_with_kp['Season'].unique())
+    print("缺失值按赛季统计（合并前）:")
+    for season in seasons:
+        season_df = games_with_kp[games_with_kp['Season'] == season]
+        
+        # 选择所有KenPom特征列
+        kp_columns = [col for col in games_with_kp.columns if col.startswith(('KP_W_', 'KP_L_'))]
+        
+        # 计算每个赛季的缺失值百分比
+        missing_pct = season_df[kp_columns].isna().mean().mean() * 100
+        print(f"  Season {season}: {missing_pct:.1f}% KenPom features missing")
+    
+    # 确定哪些列需要填充 - 只填充数值列
+    kp_w_cols = [f'KP_W_{col}' for col in numeric_columns]
+    kp_l_cols = [f'KP_L_{col}' for col in numeric_columns]
+    all_kp_cols = kp_w_cols + kp_l_cols
+    
+    # 总体缺失值统计
+    missing_before = games_with_kp[all_kp_cols].isna().mean().mean() * 100
+    print(f"Overall missing rate before imputation: {missing_before:.1f}%")
+    
+    # 修改种子列名检查
+    team1_seed_col = 'WSeed' if 'WSeed' in games_with_kp.columns else 'Team1Seed'
+    team2_seed_col = 'LSeed' if 'LSeed' in games_with_kp.columns else 'Team2Seed'
+    
+    # 基于种子排名的填充策略
+    if team1_seed_col in games_with_kp.columns and team2_seed_col in games_with_kp.columns:
+        print("使用种子排名进行缺失值填充...")
+        
+        # 对每个赛季分别处理
+        for season in seasons:
+            season_mask = games_with_kp['Season'] == season
+            season_games = games_with_kp[season_mask]
+            
+            # 为第一支队伍填充
+            for col in kp_w_cols:
+                # 只处理包含缺失值的数值列
+                if col in games_with_kp.columns and games_with_kp[col].isna().any():
+                    # 按种子排名分组计算均值
+                    seed_means = season_games.groupby(team1_seed_col)[col].mean()
+                    
+                    # 应用填充 - 使用相同种子的平均值
+                    for seed, mean_val in seed_means.items():
+                        if not pd.isna(mean_val):
+                            seed_mask = (games_with_kp['Season'] == season) & (games_with_kp[team1_seed_col] == seed) & games_with_kp[col].isna()
+                            if seed_mask.any():
+                                games_with_kp.loc[seed_mask, col] = mean_val
+            
+            # 为第二支队伍填充
+            for col in kp_l_cols:
+                # 只处理包含缺失值的数值列
+                if col in games_with_kp.columns and games_with_kp[col].isna().any():
+                    # 按种子排名分组计算均值
+                    seed_means = season_games.groupby(team2_seed_col)[col].mean()
+                    
+                    # 应用填充 - 使用相同种子的平均值
+                    for seed, mean_val in seed_means.items():
+                        if not pd.isna(mean_val):
+                            seed_mask = (games_with_kp['Season'] == season) & (games_with_kp[team2_seed_col] == seed) & games_with_kp[col].isna()
+                            if seed_mask.any():
+                                games_with_kp.loc[seed_mask, col] = mean_val
+        
+        # 记录基于种子填充后的缺失率
+        missing_after_seed = games_with_kp[all_kp_cols].isna().mean().mean() * 100
+        print(f"Missing rate after seed-based imputation: {missing_after_seed:.1f}%")
+    else:
+        # 如果没有种子数据，设置一个默认值
+        missing_after_seed = missing_before
+        print(f"没有找到种子列 {team1_seed_col} 或 {team2_seed_col}，跳过基于种子的填充")
+    
+    # 5. 最终缺失值处理
+    # 对于仍然缺失的值，使用全局均值或中位数填充
+    print("对剩余缺失值使用全局方法填充...")
+    
+    # 先获取每个特征的统计信息做为备份
+    feature_stats = {}
+    for col in all_kp_cols:
+        if col in games_with_kp.columns:
+            feature_stats[col] = {
+                'mean': games_with_kp[col].mean(),
+                'median': games_with_kp[col].median(),
+                'min': games_with_kp[col].min(),
+                'max': games_with_kp[col].max()
+            }
+    
+    # 对没有填充的缺失值执行最终填充
+    for col in all_kp_cols:
+        if col in games_with_kp.columns and games_with_kp[col].isna().any():
+            # 首先尝试使用当前数据中的均值
+            if not pd.isna(feature_stats[col]['mean']):
+                # 使用均值填充 - 使用loc方法避免警告
+                missing_mask = games_with_kp[col].isna()
+                games_with_kp.loc[missing_mask, col] = feature_stats[col]['mean']
+            # 如果均值也是NaN，那么使用中位数
+            elif not pd.isna(feature_stats[col]['median']):
+                missing_mask = games_with_kp[col].isna()
+                games_with_kp.loc[missing_mask, col] = feature_stats[col]['median']
+            # 如果均值和中位数都是NaN，使用0填充（假设是标准化后的数据）
+            else:
+                missing_mask = games_with_kp[col].isna()
+                games_with_kp.loc[missing_mask, col] = 0
+                print(f"  Warning: Using 0 for column {col} as mean and median are NaN")
+    
+    # 记录最终填充后的缺失率
+    missing_after_final = games_with_kp[all_kp_cols].isna().mean().mean() * 100
+    print(f"Missing rate after all imputations: {missing_after_final:.1f}%")
+    
+    # 打印各阶段填充的缺失率变化
+    print("\n各阶段填充进度:")
+    print(f"  初始缺失率: {missing_before:.1f}%")
+    print(f"  种子填充后: {missing_after_seed:.1f}%")
+    print(f"  最终填充后: {missing_after_final:.1f}%")
+    
+    # 6. 创建KenPom特征差异值 - 获胜队与失败队指标差
+    print("\n创建KenPom指标差异特征...")
+    for base_col in numeric_columns:
+        w_col = f'KP_W_{base_col}'
+        l_col = f'KP_L_{base_col}'
+        
+        if w_col in games_with_kp.columns and l_col in games_with_kp.columns:
+            # 创建差异列
+            diff_col = f'KP_DIFF_{base_col}'
+            games_with_kp[diff_col] = games_with_kp[w_col] - games_with_kp[l_col]
+            
+            # 保持数据类型一致
+            if pd.api.types.is_numeric_dtype(games_with_kp[w_col]):
+                games_with_kp[diff_col] = pd.to_numeric(games_with_kp[diff_col])
+    
+    # 7. 为特定重要指标创建比率特征
+    key_metrics = ['NetRtg', 'ORtg', 'DRtg', 'AdjT', 'Luck']
+    for metric in key_metrics:
+        w_col = f'KP_W_{metric}'
+        l_col = f'KP_L_{metric}'
+        
+        if w_col in games_with_kp.columns and l_col in games_with_kp.columns:
+            # 处理分母为0或接近0的情况
+            eps = 1e-10  # 小的常数，避免除0
+            
+            # 计算比率（所有比率都大于1，便于解释）
+            ratio_col = f'KP_RATIO_{metric}'
+            
+            # 处理正负值的不同比率计算方法
+            is_w_negative = (games_with_kp[w_col] < 0)
+            is_l_negative = (games_with_kp[l_col] < 0)
+            
+            # 初始化比率列
+            games_with_kp[ratio_col] = np.nan
+            
+            # 情况1: 两者都为正 - 直接计算比率
+            mask_both_pos = (~is_w_negative) & (~is_l_negative)
+            if mask_both_pos.any():
+                # 确保W/L比率大于1
+                games_with_kp.loc[mask_both_pos, ratio_col] = np.where(
+                    games_with_kp.loc[mask_both_pos, w_col] >= games_with_kp.loc[mask_both_pos, l_col],
+                    games_with_kp.loc[mask_both_pos, w_col] / (games_with_kp.loc[mask_both_pos, l_col] + eps),
+                    games_with_kp.loc[mask_both_pos, l_col] / (games_with_kp.loc[mask_both_pos, w_col] + eps)
+                )
+            
+            # 情况2: 两者都为负 - 计算比率并反转
+            mask_both_neg = is_w_negative & is_l_negative
+            if mask_both_neg.any():
+                # 对于负值，使用绝对值大小，确保比率大于1
+                games_with_kp.loc[mask_both_neg, ratio_col] = np.where(
+                    abs(games_with_kp.loc[mask_both_neg, w_col]) <= abs(games_with_kp.loc[mask_both_neg, l_col]),
+                    abs(games_with_kp.loc[mask_both_neg, l_col]) / (abs(games_with_kp.loc[mask_both_neg, w_col]) + eps),
+                    abs(games_with_kp.loc[mask_both_neg, w_col]) / (abs(games_with_kp.loc[mask_both_neg, l_col]) + eps)
+                )
+            
+            # 情况3: 一正一负 - 使用和而不是比率
+            mask_mixed = (is_w_negative & ~is_l_negative) | (~is_w_negative & is_l_negative)
+            if mask_mixed.any():
+                # 对于一正一负的情况，使用绝对值之和作为"比率"
+                games_with_kp.loc[mask_mixed, ratio_col] = abs(games_with_kp.loc[mask_mixed, w_col]) + abs(games_with_kp.loc[mask_mixed, l_col])
+    
+    # 8. 创建综合效率指标
+    # 检查关键指标是否可用
+    if all(f'KP_DIFF_{m}' in games_with_kp.columns for m in ['NetRtg', 'ORtg', 'DRtg']):
+        # 创建KenPom综合效率指标
+        games_with_kp['KP_EfficiencyComposite'] = (
+            0.5 * games_with_kp['KP_DIFF_NetRtg'] + 
+            0.3 * games_with_kp['KP_DIFF_ORtg'] + 
+            0.2 * -games_with_kp['KP_DIFF_DRtg']  # 反转DRtg（防守效率），因为低值更好
+        )
+    
+    # 更高级的复合指标
+    if all(f'KP_W_{m}' in games_with_kp.columns for m in ['ORtg', 'DRtg', 'Luck']):
+        games_with_kp['KP_TeamQualityIndex'] = (
+            games_with_kp['KP_W_ORtg'] - games_with_kp['KP_W_DRtg'] + 10 * games_with_kp['KP_W_Luck']
+        ) - (
+            games_with_kp['KP_L_ORtg'] - games_with_kp['KP_L_DRtg'] + 10 * games_with_kp['KP_L_Luck']
+        )
+    
+    # 打印完成信息
+    print(f"Successfully merged KenPom features: Added {len(all_kp_cols)} base features "
+          f"and {len(numeric_columns)} difference features, plus composite metrics")
+    
+    # 识别并标记任何剩余的缺失值
+    missing_after = {col: games_with_kp[col].isna().mean() * 100 for col in games_with_kp.columns if games_with_kp[col].isna().any()}
+    if missing_after:
+        print("\n缺失值情况（最终）:")
+        for col, pct in sorted(missing_after.items(), key=lambda x: x[1], reverse=True):
+            if pct > 0 and col in all_kp_cols:
+                print(f"  {col}: {pct:.2f}% missing")
+    else:
+        print("最终数据集中没有KenPom特征缺失值！")
+    
+    return games_with_kp

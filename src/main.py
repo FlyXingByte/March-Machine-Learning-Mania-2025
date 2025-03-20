@@ -76,9 +76,13 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     # Step 1: Load data
     season_detail, tourney_detail, seeds, teams, submission = data_loader.load_data(data_path, start_year, stage, test_mode)
     
-    # Create an empty DataFrame instead of loading KenPom data
+    # Create an empty DataFrame for the merged_kenpom_df
+    merged_kenpom_df = pd.DataFrame()
+    print("Merged KenPom data loading has been disabled.")
+    
+    # Create an empty DataFrame for the original KenPom data as it's been disabled
     kenpom_df = pd.DataFrame()
-    print("KenPom data loading has been disabled.")
+    print("Original KenPom data loading has been disabled.")
     
     # Step 2: Merge and prepare games data
     games = data_loader.merge_and_prepare_games(season_detail, tourney_detail)
@@ -105,13 +109,8 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     games = feature_engineering.enhance_key_stat_differentials(games)
     games = feature_engineering.add_historical_tournament_performance(games, seed_dict)
     
-    # --- Merge KenPom features into training data ---
-    # KenPom feature merging disabled
-    print("KenPom feature merging has been disabled.")
-    
-    # Add feature crosses after all other features have been calculated
-    print("Adding feature interactions to improve predictive power...")
-    games = feature_engineering.add_feature_crosses(games)
+    # --- Merged KenPom features section removed ---
+    print("Merged KenPom features have been disabled.")
     
     # Step 7: Aggregate features
     agg_features = feature_engineering.aggregate_features(games)
@@ -145,7 +144,7 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     
     # Step 8: Prepare submission features (submission games remain unchanged)
     submission_df = feature_engineering.prepare_submission_features(
-        submission.copy(), seed_dict, team_stats_cum, data_loader.extract_game_info
+        submission, seed_dict, team_stats_cum, data_loader.extract_game_info
     )
     
     # Verify submission data integrity before further processing
@@ -167,12 +166,8 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
     submission_df = feature_engineering.enhance_key_stat_differentials(submission_df)
     submission_df = feature_engineering.add_historical_tournament_performance(submission_df, seed_dict)
     
-    # Try to add KenPom features to submission data
-    # KenPom feature merging for submission data disabled
-    print("KenPom feature merging for submission data has been disabled.")
-    
-    # Add feature interactions to submission data
-    submission_df = feature_engineering.add_feature_crosses(submission_df)
+    # --- Merged KenPom features for submission section removed ---
+    print("Merged KenPom features for submission have been disabled.")
     
     # Apply new features to evaluation data if in simulation mode
     if simulation_mode and eval_data is not None and not eval_data.empty:
@@ -183,11 +178,8 @@ def run_pipeline(data_path, start_year=2021, output_file="submission.csv", verbo
         eval_data = feature_engineering.enhance_key_stat_differentials(eval_data)
         eval_data = feature_engineering.add_historical_tournament_performance(eval_data, seed_dict)
         
-        # Try to add KenPom features to eval data
-        # KenPom feature merging for evaluation data disabled
-        
-        # Add feature interactions to evaluation data
-        eval_data = feature_engineering.add_feature_crosses(eval_data)
+        # --- Merged KenPom features for eval data section removed ---
+        print("Merged KenPom features for evaluation data have been disabled.")
     
     # Verify submission data integrity after all feature engineering
     if 'original_index' in submission_df.columns:
@@ -440,12 +432,12 @@ if __name__ == "__main__":
         verbose=args.verbose,
         stage=args.stage,
         test_mode=args.test_mode,
-    
         simulation_mode=args.simulation_mode,
         use_extended_models=args.use_extended_models,
         use_monte_carlo=args.use_monte_carlo,
         num_simulations=args.num_simulations,
         simulation_weight=args.simulation_weight
     )
-    
-# python main.py --use_monte_carlo --num_simulations=10000 --simulation_weight=0.3
+
+# 方案1：
+# python main.py --use_monte_carlo --num_simulations=20000 --simulation_weight=0.4
